@@ -1802,6 +1802,7 @@ def rmtree_force(folder):
 
 
 JOURNAL = "journal.json"
+IN_BROWSER = sys.platform in ("emscripten", "wasi")           # Pyodide
 
 
 def write_durable(path, data):
@@ -1810,15 +1811,13 @@ def write_durable(path, data):
     with open(path, "wb") as fh:
         fh.write(data)
         fh.flush()
-        try:
+        if not IN_BROWSER:                                      # der Arbeitsspeicher-Speicher im Browser kennt kein fsync
             os.fsync(fh.fileno())
-        except OSError:                                         # Dateisysteme ohne fsync (z. B. im Browser)
-            pass
 
 
 def fsync_dir(folder):
     """Ordnereintraege (Umbenennungen) sichern. Unter Windows nicht moeglich - dort verlaesst sich meshcut auf das Journal von NTFS."""
-    if os.name == "nt":
+    if os.name == "nt" or IN_BROWSER:
         return
     try:
         fd = os.open(str(folder), os.O_RDONLY)
