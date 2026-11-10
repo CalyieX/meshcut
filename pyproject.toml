@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kk-meshcut"
+version = "0.1.0"
+description = "K&K meshcut - cut 3D meshes into parts exactly and put them back together, with a round-trip proof"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+dependencies = ["numpy>=1.23,<3"]
+keywords = ["3d", "mesh", "stl", "3d-printing", "slicing", "split", "boolean", "3mf", "glb", "obj"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Topic :: Multimedia :: Graphics :: 3D Modeling",
+  "Intended Audience :: Developers",
+]
+
+[project.urls]
+Homepage = "https://github.com/CalyieX/meshcut"
+Browser = "https://calyiex.github.io/meshcut/"
+Issues = "https://github.com/CalyieX/meshcut/issues"
+
+[project.optional-dependencies]
+test = ["pytest", "hypothesis"]
+check = ["pytest", "hypothesis", "trimesh", "manifold3d", "shapely", "mapbox-earcut", "rtree", "networkx"]
+
+[project.scripts]
+meshcut = "kkmeshcut:main"
+
+[tool.setuptools]
+py-modules = ["kkmeshcut"]

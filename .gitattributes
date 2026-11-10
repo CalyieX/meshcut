@@ -1,0 +1,5 @@
+* text=auto eol=lf
+*.stl binary
+*.glb binary
+*.3mf binary
+*.npy binary

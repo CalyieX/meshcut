@@ -1,0 +1,53 @@
+name: tests
+on:
+  push:
+  pull_request:
+  workflow_call:
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-latest, macos-15-intel, windows-latest]
+        python: ["3.9", "3.12", "3.13"]
+        exclude:
+          - { os: macos-latest, python: "3.9" }   # Apple-Silicon-Runner bietet 3.9 nicht an
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "${{ matrix.python }}" }
+      - run: python -m pip install -e ".[test]"
+      - run: python -m pytest -q tests
+      - run: meshcut --help
+
+  gegenproben:
+    name: Gegenproben (trimesh, manifold3d)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: python -m pip install -e ".[check]"
+      - run: python -m pytest -q tests -k "trimesh or manifold"
+      - run: MESHCUT_EXAMPLES=300 python -m pytest -q tests/test_property.py
+
+  web:
+    name: web (${{ matrix.engine }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest, engine: webkit }      # die Engine von Safari, auch auf dem iPhone
+          - { os: ubuntu-24.04, engine: chromium }
+          - { os: ubuntu-24.04, engine: firefox }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: python -m pip install playwright numpy
+      - run: python -m playwright install --with-deps ${{ matrix.engine }}
+      - run: python tests/web_check.py ${{ matrix.engine }} grid
+      - run: python tests/web_check.py ${{ matrix.engine }} plane
+      - run: python tests/web_check.py ${{ matrix.engine }} wedges

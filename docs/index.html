@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>K&amp;K meshcut</title>
+<meta name="description" content="3D-Netze exakt zerlegen und wieder zusammensetzen, mit Rundlauf-Beweis. Läuft komplett im Browser, nichts wird hochgeladen.">
+<style>
+  :root { --bg:#f6f6f4; --fg:#1b1b1a; --muted:#6b6b66; --card:#fff; --line:#dcdcd6; --accent:#2a5bd7; --ok:#1c7a3d; --bad:#b3261e; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#161615; --fg:#ececea; --muted:#9a9a94; --card:#20201f; --line:#34342f; --accent:#7ba3ff; --ok:#6fcf97; --bad:#ff8a80; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.45 -apple-system, system-ui, "Segoe UI", sans-serif;
+         padding: max(16px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom)); }
+  main { max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 1.5rem; margin: .2em 0 .1em; }
+  p.lead { color: var(--muted); margin: 0 0 1em; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin: 12px 0; }
+  label { display:block; font-size:.85rem; color:var(--muted); margin: 10px 0 4px; }
+  input[type=text], input[type=number], select { width:100%; font:inherit; padding:10px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--fg); }
+  input[type=file] { width:100%; font:inherit; }
+  .row { display:grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  button { font:inherit; font-weight:600; padding:12px 16px; border-radius:10px; border:0; background:var(--accent); color:#fff; width:100%; margin-top:14px; min-height:44px; }
+  button[disabled] { opacity:.5; }
+  .check { display:flex; gap:8px; align-items:center; margin-top:12px; font-size:.95rem; color:var(--fg); }
+  .check input { width:20px; height:20px; }
+  #status { white-space: pre-wrap; font: .85rem/1.4 ui-monospace, Menlo, monospace; color: var(--muted); }
+  #status.ok { color: var(--ok); } #status.bad { color: var(--bad); }
+  a.dl { display:block; text-align:center; padding:12px; margin:8px 0; border:1px solid var(--accent); border-radius:10px; color:var(--accent); text-decoration:none; font-weight:600; min-height:44px; }
+  small { color: var(--muted); }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>K&amp;K meshcut</h1>
+  <p class="lead">3D-Netze exakt zerlegen und wieder zusammensetzen &ndash; mit Rundlauf-Beweis. Alles läuft auf diesem Gerät, deine Datei wird nie hochgeladen.</p>
+
+  <div class="card">
+    <label for="cmd">Was möchtest du tun?</label>
+    <select id="cmd">
+      <option value="split">Zerlegen (Ebene, Gitter, Druckraum, Keile)</option>
+      <option value="join">Teile wieder zusammensetzen</option>
+      <option value="verify">Rundlauf prüfen</option>
+      <option value="info">Kennzahlen anzeigen</option>
+    </select>
+
+    <label for="files" id="fileLabel">3D-Datei (STL, OBJ, GLB, 3MF)</label>
+    <input id="files" type="file" accept=".stl,.obj,.glb,.3mf">
+
+    <div id="splitOpts">
+      <label for="how">Art des Schnitts</label>
+      <select id="how">
+        <option value="grid">Gitter (Zellen in x mal y mal z)</option>
+        <option value="plane">Ebene(n)</option>
+        <option value="max">Druckraum (größtes Teil in x mal y mal z)</option>
+        <option value="wedges">Keile um eine Achse</option>
+      </select>
+      <div id="gridBox"><label for="grid">Zellen, z. B. 2x2x3</label><input id="grid" type="text" value="2x2x1" autocomplete="off"></div>
+      <div id="planeBox" hidden><label for="plane">Ebenen, getrennt durch Semikolon, z. B. x=12.5; z=-3 oder 1,1,0,4</label><input id="plane" type="text" value="" autocomplete="off"></div>
+      <div id="maxBox" hidden><label for="max">Druckraum, z. B. 220x220x250</label><input id="max" type="text" value="220x220x250" autocomplete="off"></div>
+      <div id="wedgeBox" hidden>
+        <div class="row">
+          <div><label for="wedges">Keile (gerade Zahl)</label><input id="wedges" type="number" value="8" min="2" step="2"></div>
+          <div><label for="axis">Achse</label><select id="axis"><option>z</option><option>x</option><option>y</option></select></div>
+        </div>
+      </div>
+      <label for="format">Dateiformat der Teile</label>
+      <select id="format"><option value="stl">STL</option><option value="obj">OBJ (genau, 64 Bit)</option><option value="3mf">3MF (alle Teile in einer Datei)</option><option value="glb">GLB (alle Teile in einer Datei)</option></select>
+      <div class="check"><input id="nocap" type="checkbox"><label for="nocap" style="margin:0;color:inherit">Ohne Deckel schneiden (für offene Netze)</label></div>
+      <div class="check"><input id="flip" type="checkbox"><label for="flip" style="margin:0;color:inherit">Dreiecke umdrehen (Netz ist nach innen orientiert)</label></div>
+      <small>Mit der Begleitdatei meshcut.json setzt das Zusammensetzen die Original-Dreiecke wieder her, bitgenau.</small>
+    </div>
+
+    <div id="joinOpts" hidden>
+      <label for="jformat">Dateiformat des Ergebnisses</label>
+      <select id="jformat"><option value="stl">STL</option><option value="obj">OBJ</option><option value="3mf">3MF</option><option value="glb">GLB</option></select>
+    </div>
+
+    <button id="go" disabled>Lade Programm&hellip;</button>
+  </div>
+
+  <div class="card"><div id="status">Starte&hellip;</div></div>
+  <div class="card" id="results" hidden></div>
+  <p><small>Open Source (MIT): <a href="https://github.com/CalyieX/meshcut">github.com/CalyieX/meshcut</a> &middot; Unterstützen: <a href="https://ko-fi.com/kkwonderland">ko-fi.com/kkwonderland</a></small></p>
+</main>
+
+<script src="https://cdn.jsdelivr.net/pyodide/v0.27.7/full/pyodide.js" integrity="sha384-90so5tCKvl0xs9agU29IMKlAVzhfzFX7QO//YxQkRhJG58bBZrFN+2ZTRB026X5X" crossorigin="anonymous"></script>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const MAX_MB = 40;
+const status = (t, cls) => { $("status").textContent = t; $("status").className = cls || ""; };
+let py = null;
+
+async function boot() {
+  try {
+    status("Lade das Programm (beim ersten Mal ca. 15 MB, dann im Cache) …");
+    py = await loadPyodide();
+    await py.loadPackage(["numpy"]);
+    const src = await (await fetch("kkmeshcut.py", { cache: "no-cache" })).text();
+    py.FS.mkdirTree("/work");
+    py.FS.writeFile("/work/kkmeshcut.py", src);
+    await py.runPythonAsync(`
+import sys, io, os, re, contextlib, zipfile
+sys.path.insert(0, "/work")
+import kkmeshcut
+def run(argv):
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            kkmeshcut.main(argv)
+        return 0, buf.getvalue()
+    except SystemExit as e:
+        code = e.code
+        msg = buf.getvalue() + (str(code) if isinstance(code, str) else "")
+        return (0 if code in (None, 0) else 1), msg
+    except BaseException as e:
+        return 1, buf.getvalue() + "Fehler: %s" % e
+def zip_dir(folder, target):
+    with zipfile.ZipFile(target, "w", zipfile.ZIP_STORED) as z:
+        for n in sorted(os.listdir(folder)):
+            if n.startswith("."): continue
+            z.write(os.path.join(folder, n), n)
+`);
+    $("go").disabled = false;
+    $("go").textContent = "Los";
+    status("Bereit. Wähle eine Datei.", "ok");
+  } catch (e) {
+    status("Das Programm ließ sich nicht starten: " + e + "\nDie Seite braucht einen aktuellen Browser (Safari 16+, Chrome, Firefox) und beim ersten Mal Internet.", "bad");
+    $("go").textContent = "Programm nicht verfügbar";
+  }
+}
+
+function layout() {
+  const c = $("cmd").value, how = $("how").value;
+  $("splitOpts").hidden = c !== "split";
+  $("joinOpts").hidden = c !== "join";
+  for (const k of ["grid", "plane", "max", "wedge"]) $(k + "Box").hidden = (c !== "split") || (k === "wedge" ? how !== "wedges" : how !== k);
+  const f = $("files");
+  if (c === "join" || c === "verify") { f.multiple = true; f.accept = ".stl,.obj,.glb,.3mf,.json"; $("fileLabel").textContent = "Alle Teile (part_0.stl, … oder parts.3mf) und meshcut.json"; }
+  else { f.multiple = false; f.accept = ".stl,.obj,.glb,.3mf"; $("fileLabel").textContent = "3D-Datei (STL, OBJ, GLB, 3MF)"; }
+  f.value = "";
+}
+$("cmd").addEventListener("change", layout);
+$("how").addEventListener("change", layout);
+
+let blobUrls = [];
+function clearResults() { const r = $("results"); r.hidden = true; r.replaceChildren(); blobUrls.forEach((u) => URL.revokeObjectURL(u)); blobUrls = []; }
+function addDownload(name, bytes, type) {
+  const u = URL.createObjectURL(new Blob([bytes], { type })); blobUrls.push(u);
+  const a = document.createElement("a"); a.className = "dl"; a.href = u; a.download = name; a.textContent = name + " speichern";
+  $("results").appendChild(a);
+}
+function wipe() { for (const d of ["/work/in", "/work/out"]) { try { py.runPython(`import shutil; shutil.rmtree("${d}", ignore_errors=True)`); } catch (_) {} } }
+
+const PLANE_RE = /^(?:[xyz]=[-+]?\d*\.?\d+(?:e[-+]?\d+)?|(?:[-+]?\d*\.?\d+(?:e[-+]?\d+)?,){3}[-+]?\d*\.?\d+(?:e[-+]?\d+)?)$/i;
+const COUNT_RE = /^\d+x\d+(?:x\d+)?$/i;
+const SIZE_RE = /^[0-9.]+x[0-9.]+(?:x[0-9.]+)?$/i;
+const PART_RE = /^(?:part_(?:0|[1-9]\d*)\.(?:stl|obj)|parts\.(?:3mf|glb)|meshcut\.json)$/;
+
+async function go() {
+  clearResults();
+  const cmd = $("cmd").value;
+  const files = Array.from($("files").files);
+  if (!files.length) { status("Wähle zuerst eine Datei.", "bad"); return; }
+  if (files.some((f) => f.size > MAX_MB * 1048576)) { status("Eine Datei ist größer als " + MAX_MB + " MB - zu groß für die Browser-Version. Nimm das Programm (pip install kk-meshcut) für große Netze.", "bad"); return; }
+  if (cmd === "join" || cmd === "verify") {
+    const bad = files.map((f) => f.name).filter((n) => !PART_RE.test(n));
+    if (bad.length) { status("Das sind keine Teile: " + bad.join(", ") + "\nWähle die Dateien, die das Zerlegen geliefert hat (genaue Namen nötig), samt meshcut.json.", "bad"); return; }
+    if (new Set(files.map((f) => f.name)).size !== files.length) { status("Manche Dateinamen kommen doppelt vor.", "bad"); return; }
+    if (!files.some((f) => f.name === "meshcut.json")) { status("meshcut.json fehlt - ohne sie ist kein bitgenaues Zusammensetzen möglich.", "bad"); return; }
+  }
+  let opts = [];
+  if (cmd === "split") {
+    const how = $("how").value;
+    if (how === "grid") { const v = $("grid").value.replace(/\s+/g, ""); if (!COUNT_RE.test(v)) { status("Gitter muss so aussehen: 2x2x3", "bad"); return; } opts = ["--grid=" + v]; }
+    else if (how === "max") { const v = $("max").value.replace(/\s+/g, ""); if (!SIZE_RE.test(v)) { status("Druckraum muss so aussehen: 220x220x250", "bad"); return; } opts = ["--max=" + v]; }
+    else if (how === "plane") {
+      const parts = $("plane").value.split(";").map((s) => s.replace(/\s+/g, "")).filter(Boolean);
+      if (!parts.length || parts.some((p) => !PLANE_RE.test(p))) { status("Ebenen so angeben: x=12.5; z=-3 oder 1,1,0,4", "bad"); return; }
+      opts = parts.map((p) => "--plane=" + p);
+    } else {
+      const n = Number($("wedges").value);
+      if (!Number.isInteger(n) || n < 2 || n % 2) { status("Keile: gerade ganze Zahl, mindestens 2.", "bad"); return; }
+      opts = ["--wedges=" + n, "--axis=" + $("axis").value];
+    }
+    opts.push("--format=" + $("format").value);
+    if ($("nocap").checked) opts.push("--no-cap");
+    if ($("flip").checked) opts.push("--flip");
+    opts.push("--verify");
+  }
+  $("go").disabled = true; status("Arbeite …");
+  await new Promise((r) => setTimeout(r, 30));
+  try {
+    wipe();
+    py.FS.mkdirTree("/work/in"); py.FS.mkdirTree("/work/out");
+    let argv;
+    for (const f of files) {
+      const ext = (f.name.match(/\.(stl|obj|3mf|glb)$/i) || [""])[0].toLowerCase();
+      const name = (cmd === "split" || cmd === "info") ? "input" + ext : f.name;
+      py.FS.writeFile("/work/in/" + name, new Uint8Array(await f.arrayBuffer()));
+    }
+    if (cmd === "split") {
+      const ext = (files[0].name.match(/\.(stl|obj|3mf|glb)$/i) || [""])[0].toLowerCase();
+      argv = ["split", "/work/in/input" + ext, "/work/out/parts"].concat(opts);
+    } else if (cmd === "info") {
+      const ext = (files[0].name.match(/\.(stl|obj|3mf|glb)$/i) || [""])[0].toLowerCase();
+      argv = ["info", "/work/in/input" + ext];
+    } else if (cmd === "verify") argv = ["verify", "/work/in"];
+    else argv = ["join", "/work/in", "/work/out/joined." + $("jformat").value];
+    const res = py.globals.get("run")(py.toPy(argv)).toJs();
+    const code = res[0], text = String(res[1]).trim();
+    if (code !== 0) { status(text || "Etwas ist schiefgelaufen.", "bad"); return; }
+    status(text, "ok");
+    const R = $("results"); R.hidden = false;
+    if (cmd === "split") {
+      py.runPython(`zip_dir("/work/out/parts", "/work/out/parts.zip")`);
+      addDownload("meshcut-teile.zip", py.FS.readFile("/work/out/parts.zip"), "application/zip");
+    } else if (cmd === "join") {
+      const n = "joined." + $("jformat").value;
+      addDownload(n, py.FS.readFile("/work/out/" + n), "application/octet-stream");
+    } else R.hidden = true;
+  } catch (e) {
+    status("Fehler: " + e, "bad");
+  } finally {
+    $("go").disabled = false;
+  }
+}
+$("go").addEventListener("click", go);
+layout();
+boot();
+</script>
+</body>
+</html>
