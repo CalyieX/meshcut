@@ -356,7 +356,7 @@ def test_mcp_server_speaks_the_protocol_and_runs_the_tools(tmp_path):
     ])
     ids = {m["id"]: m for m in out}
     assert ids[1]["result"]["protocolVersion"] == "2025-06-18" and ids[1]["result"]["serverInfo"]["name"] == "meshcut"
-    assert {t["name"] for t in ids[2]["result"]["tools"]} == {"info", "split", "segment", "join", "verify"}
+    assert {t["name"] for t in ids[2]["result"]["tools"]} == {"info", "split", "segment", "join", "verify", "regions", "remove", "swap"}
     assert 1 not in ids or "result" in ids[1] and None not in ids
     body = lambda i: json.loads(ids[i]["result"]["content"][0]["text"])
     assert not ids[3]["result"]["isError"] and body(3)["faces"] == len(figure().F)
@@ -555,20 +555,91 @@ def test_a_half_sent_request_does_not_hold_a_thread_forever(tmp_path):
         srv.server_close()
 
 
+BAD_JOURNALS = [
+    (["../../victim.txt", "part_0.obj"], {}),                       # Pfad ausserhalb
+    (["part_0.obj", "meshcut.json"], {"0": "../victim.txt"}),       # moved zeigt woanders hin
+    (["C:/Windows/x.txt"], {}),
+    (["part_0.obj"], {"5": "part_0.obj"}),                          # Index ausserhalb
+    (["part_0.obj"], {"-1": "part_0.obj"}),                         # negativer Index (Python-Listen-Falle)
+    (["part_0.obj", "part_1.obj"], {"0": "part_1.obj"}),            # Name passt nicht zum Index
+    (["part_0.obj"], ["x"]),                                        # moved keine Zuordnung
+    ("kaputt", {}),
+    ([7], {}),
+    (["part_0.obj/../../victim.txt"], {}),                          # beginnt wie ein Teilname (match statt fullmatch)
+    (["part_0.obj" + chr(10)], {}),                                # Zeilenumbruch am Ende (fullmatch ohne $-Falle)
+    (["part_01.obj"], {}),
+    (["a.txt"], {}),
+]
+
+
+def _plant_journal(tmp_path, state, names, moved, marker=True, journal=True, aged=True):
+    """Ein fremdes Journal in einem Zwischenordner; `aged` macht ihn alt genug, damit lesende Befehle ihn ueberhaupt anfassen."""
+    src = write(tmp_path / "f.obj", shapes.cube(2.0, lo=(-1, -1, -1)))
+    mc.split(src, tmp_path / "o", plane=["x=0"], format="obj")
+    victim = tmp_path / "victim.txt"
+    victim.write_text("bleibt")
+    aside = tmp_path / "o" / ".meshcut_boese"
+    aside.mkdir()
+    if marker:
+        (aside / mc.MARKER).write_text("meshcut")
+    if journal:
+        (aside / "journal.json").write_text(json.dumps({"state": state, "names": names, "moved": moved}))
+    (aside / "0").write_text("x")
+    if aged:
+        os.utime(aside, (1, 1))
+    return aside, victim
+
+
+@pytest.mark.parametrize("names,moved", BAD_JOURNALS)
+@pytest.mark.parametrize("state", ["moving", "done"])
+def test_recovery_rejects_every_bad_journal(tmp_path, names, moved, state):
+    """Jede Pruefung des Journals einzeln: ein unbrauchbares Journal bleibt liegen, nichts wird verschoben oder geloescht."""
+    aside, victim = _plant_journal(tmp_path, state, names, moved)
+    before = sorted(p.name for p in (tmp_path / "o").iterdir())
+    mc.recover_outdir(tmp_path / "o", 0)
+    assert victim.read_text() == "bleibt" and aside.is_dir() and (aside / "0").is_file()
+    assert sorted(p.name for p in (tmp_path / "o").iterdir()) == before
+
+
+def test_recovery_bad_state_is_rejected(tmp_path):
+    aside, victim = _plant_journal(tmp_path, "weg", ["part_0.obj"], {})
+    mc.recover_outdir(tmp_path / "o", 0)
+    assert aside.is_dir() and (tmp_path / "o" / "part_0.obj").is_file()
+
+
+def test_recovery_ignores_folders_without_marker_or_journal(tmp_path):
+    aside, _ = _plant_journal(tmp_path, "moving", ["part_0.obj"], {}, marker=False, journal=False)
+    mc.recover_outdir(tmp_path / "o", 0)
+    assert aside.is_dir() and (aside / "0").is_file()
+
+
+def test_recovery_removes_marker_only_staging_but_only_when_old(tmp_path):
+    aside, _ = _plant_journal(tmp_path, "moving", ["part_0.obj"], {}, journal=False, aged=False)
+    mc.recover_outdir(tmp_path / "o", 600)
+    assert aside.is_dir()
+    mc.recover_outdir(tmp_path / "o", 0)
+    assert not aside.exists()
+
+
+@pytest.mark.parametrize("state,content", [("done", "geblieben"), ("moving", "x")])
+def test_recovery_good_journal_is_carried_out(tmp_path, state, content):
+    """Gegenprobe: ein gueltiges Journal wird wirklich abgearbeitet (sonst waeren die Ablehnungen oben wertlos).
+    done: der neue Satz bleibt, der Rest geht weg. moving: das zur Seite gelegte Original kommt zurueck."""
+    aside, _ = _plant_journal(tmp_path, state, ["part_0.obj"], {"0": "part_0.obj"})
+    (tmp_path / "o" / "part_0.obj").write_text("geblieben")
+    mc.recover_outdir(tmp_path / "o", 0)
+    assert not aside.exists() and (tmp_path / "o" / "part_0.obj").read_text() == content
+
+
 @pytest.mark.parametrize("names,moved", [(["../../victim.txt", "part_0.obj"], {}), (["part_0.obj", "meshcut.json"], {"0": "../victim.txt"}),
                                          (["C:/Windows/x.txt"], {}), (["part_0.obj"], {"5": "part_0.obj"}), ("kaputt", {})])
 def test_recovery_journal_cannot_reach_outside_its_folder(tmp_path, names, moved):
     """Das Journal liegt als Text im Ordner und darf nichts ausserhalb davon loeschen oder verschieben (auch nicht ueber verify)."""
     src = write(tmp_path / "f.obj", figure())
     mc.segment(src, tmp_path / "o", parts=3, format="obj")
-    victim = tmp_path / "victim.txt"
-    victim.write_text("bleibt")
-    aside = tmp_path / "o" / ".meshcut_boese"
-    aside.mkdir()
-    (aside / "journal.json").write_text(json.dumps({"state": "moving", "names": names, "moved": moved}))
-    (aside / "0").write_text("x")
+    aside, victim = _plant_journal(tmp_path, "moving", names, moved)
     mc.verify(tmp_path / "o")
-    assert victim.read_text() == "bleibt" and (tmp_path / "o" / "part_0.obj").is_file()
+    assert victim.read_text() == "bleibt" and (tmp_path / "o" / "part_0.obj").is_file() and aside.is_dir()
 
 
 def test_foreign_commands_never_inherit_stdin(monkeypatch):

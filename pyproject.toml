@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kk-meshcut"
-version = "0.1.0"
+version = "0.2.0"
 description = "K&K meshcut - cut 3D meshes into parts exactly and put them back together, with a round-trip proof"
 readme = "README.md"
 license = { text = "MIT" }
@@ -31,4 +31,4 @@ check = ["pytest", "hypothesis", "trimesh", "manifold3d", "shapely", "mapbox-ear
 meshcut = "kkmeshcut:main"
 
 [tool.setuptools]
-py-modules = ["kkmeshcut", "kkmeshcut_ai", "kkmeshcut_serve"]
+py-modules = ["kkmeshcut", "kkmeshcut_ai", "kkmeshcut_serve", "kkmeshcut_edit"]

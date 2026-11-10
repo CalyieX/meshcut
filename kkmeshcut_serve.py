@@ -59,6 +59,9 @@ def _opt(args, key, kind):
     elif kind == "str":
         if not isinstance(v, str):
             raise MeshcutError("%s: Text noetig." % key)
+    elif kind == "num":
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            raise MeshcutError("%s: Zahl noetig." % key)
     elif kind == "format":
         if v not in mc.FORMATS:
             raise MeshcutError("format: moeglich sind %s." % ", ".join(mc.FORMATS))
@@ -112,8 +115,41 @@ class Tools:
                 "source_hash": r["source_hash"], "joined_hash": r["joined_hash"]}
 
 
+    def regions(self, a):
+        opts = {}
+        size = _opt(a, "size", "int")
+        if size is not None:
+            opts["size"] = size
+        js = mc.regions(self.sb.path(a.get("input"), "input"), self.sb.path(a.get("outdir"), "outdir"), **opts)
+        return js
+
+    def _edit(self, cmd, a, keys):
+        src = self.sb.path(a.get("input"), "input")
+        opts = {}
+        for key, kind in keys:
+            v = _opt(a, key, kind)
+            if v is not None:
+                opts[key] = v
+        if "out" in opts:
+            opts["out"] = self.sb.path(opts["out"], "out")
+        r = getattr(mc, cmd)(src, **opts)
+        out = Path(r["output"]) if r["output"] else None
+        return {"output": str(out.relative_to(self.sb.root)) if out is not None and out.is_absolute() and self.sb.root in out.parents else r["output"],
+                "report": r["text"]}
+
+    def remove(self, a):
+        return self._edit("remove", a, (("region", "int"), ("at", "str"), ("name", "str"), ("out", "str")))
+
+    def swap(self, a):
+        return self._edit("swap", a, (("region", "int"), ("at", "str"), ("name", "str"), ("out", "str"), ("shape", "str"), ("axis", "str"),
+                                      ("scale", "num"), ("material", "str")))
+
+
 def tool_specs():
     S = {"type": "string"}
+    SEL = {"region": {"type": "integer", "description": "Nummer aus regions.json"}, "at": {"type": "string", "description": "Punkt x,y,z auf dem Element"},
+           "name": {"type": "string", "description": "Name eines Objekts, einer Gruppe oder eines Materials"},
+           "out": {"type": "string", "description": "Ausgabedatei (Vorgabe: <Eingabe>_edit.<Endung>)"}}
     return [
         {"name": "info", "description": "Kennzahlen eines Netzes (Dreiecke, Volumen, Flaeche, wasserdicht, Hash).",
          "inputSchema": {"type": "object", "properties": {"path": S}, "required": ["path"]}},
@@ -130,6 +166,17 @@ def tool_specs():
              "format": {"type": "string", "enum": list(mc.FORMATS)}}, "required": ["input", "outdir"]}},
         {"name": "join", "description": "Teile zusammensetzen: ein Ordner mit meshcut.json (bitgenau) oder eine Liste von Dateien (Naeherung).",
          "inputSchema": {"type": "object", "properties": {"parts": {"anyOf": [S, {"type": "array", "items": S}]}, "output": S}, "required": ["parts", "output"]}},
+        {"name": "regions", "description": "Elemente eines Netzes nummerieren (regions.png mit Nummern + regions.json mit Punkt, Rahmen, Material je Element), "
+         "damit man 'Teil 7' waehlen kann statt Koordinaten zu raten.",
+         "inputSchema": {"type": "object", "properties": {"input": S, "outdir": S, "size": {"type": "integer"}}, "required": ["input", "outdir"]}},
+        {"name": "remove", "description": "Ein Element (region | at | name) entfernen und das Loch sauber schliessen; Material, UV und Normalen der Umgebung bleiben. "
+         "Die Antwort enthaelt die Pruefzeile (was sich geaendert hat, dass der Rest identisch ist).",
+         "inputSchema": {"type": "object", "properties": dict({"input": S}, **SEL), "required": ["input"]}},
+        {"name": "swap", "description": "Ein Element (region | at | name) durch einen Grundkoerper gleicher Groesse ersetzen; Material, UV-Bereich und Glaettung automatisch. "
+         "shape, axis, scale und material sind nur Feinschliff.",
+         "inputSchema": {"type": "object", "properties": dict({"input": S, "shape": {"type": "string", "enum": ["auto", "box", "sphere", "cylinder"]},
+                                                              "axis": {"type": "string", "enum": ["auto", "x", "y", "z"]}, "scale": {"type": "number"}, "material": S}, **SEL),
+                         "required": ["input"]}},
         {"name": "verify", "description": "Rundlauf eines Teileordners pruefen (Hash je Teil, Deckel auf den Ebenen, Volumen, Flaeche, wasserdicht, Euler, Hash der Quelle).",
          "inputSchema": {"type": "object", "properties": {"parts": S, "source": S}, "required": ["parts"]}},
     ]

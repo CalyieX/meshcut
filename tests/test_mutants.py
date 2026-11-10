@@ -608,9 +608,9 @@ def test_empty_meshes_get_one_clean_message(tmp_path, cmd):
 
 
 def test_many_polygons_share_one_work_budget(monkeypatch):
-    monkeypatch.setattr(mc, "MAX_POLYGON_WORK", 500)
+    monkeypatch.setattr(mc, "MAX_POLYGON_WORK", 8 * (64 + mc.POLYGON_SLOW_COST) - 1)
     ring = "\n".join("v %f %f 0" % (np.cos(a), np.sin(a)) for a in np.linspace(0, 2 * np.pi, 8, endpoint=False))
-    faces = "\n".join("f 1 2 3 4 5 6 7 8" for _ in range(20))     # jede Flaeche 64 Einheiten: 8 passen, 20 nicht
+    faces = "\n".join("f 1 2 3 4 5 6 7 8" for _ in range(20))     # jede Flaeche 64 + Zuschlag: 7 passen, 20 nicht
     with pytest.raises(mc.MeshcutError, match="zu aufwendig"):
         mc.read_meshes_bytes("obj", (ring + "\n" + faces + "\n").encode(), "x")
     assert len(mc.read_meshes_bytes("obj", (ring + "\n" + "\n".join(faces.split("\n")[:7]) + "\n").encode(), "x")[0].F) == 7 * 6
@@ -649,3 +649,174 @@ def test_glb_instances_share_one_parse_of_the_mesh(monkeypatch):
           "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 36}], "buffers": [{"byteLength": 36}]}
     got = mc.read_glb(_glb(js, np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], "<f4").tobytes()))
     assert sum(len(t) for _, t in got) == 200 and len(calls) <= 3        # einmal gelesen, nicht 200 mal
+
+
+# ============================================================================= Pruefrunde 5
+# ----------------------------------------------------------------------------- Hausdorff mit flaechenlosen Stuecken
+def _flat_and_real(tmp_path):
+    T = np.array([[[0., 5, 5], [1, 5, 5], [0, 6, 5]], [[0, 0, 0], [1, 0, 0], [3, 0, 0]]])     # echtes Dreieck + flaechenloses (drei Punkte auf einer Geraden)
+    V, F = mc.weld_triangles(T)
+    p = tmp_path / "a.stl"
+    p.write_bytes(mc.mesh_bytes("stl", V, F, "x"))
+    return p
+
+
+@pytest.mark.parametrize("planes,no_cap", [(["x=2", "y=1"], True), (["x=0.5", "x=2"], True), (["x=2", "y=5.5"], True)])
+def test_hausdorff_ignores_flat_fragments_made_by_the_cut(tmp_path, planes, no_cap):
+    """Ein Schnitt zerlegt ein flaechenloses Dreieck in flaechenlose Stuecke mit neuen Eckpunkten: sie duerfen den Vergleich nicht kippen."""
+    src = _flat_and_real(tmp_path)
+    mc.split(src, tmp_path / "o", plane=planes, format="stl", no_cap=no_cap)
+    r = mc.verify(tmp_path / "o", source=src)
+    assert r["ok"], [c for c in r["checks"] if not c[1]]
+
+
+def test_hausdorff_still_detects_a_moved_vertex(tmp_path):
+    """Gegenprobe: das Weglassen flacher Dreiecke macht den Vergleich nicht blind."""
+    src, out = split_to(tmp_path, plane=["x=0.4"])
+    parts = sorted(out.glob("part_*.obj"))
+    parts[0].write_text(parts[0].read_text().replace("v ", "v 9", 1))
+    r = mc.verify(out, source=src)
+    assert not r["ok"]
+
+
+# ----------------------------------------------------------------------------- Flaechen mit vielen Ecken: Arbeitsbudget
+def _quads_obj(n, quad="f 1 2 3 4"):
+    return ("\n".join(["v 0 0 0", "v 1 0 0", "v 1 1 0", "v 0 1 0"] + [quad] * n)).encode()
+
+
+def test_quads_are_counted_in_the_polygon_budget(monkeypatch):
+    monkeypatch.setattr(mc, "MAX_POLYGON_WORK", 16 * 5)
+    assert len(mc.read_meshes_bytes("obj", _quads_obj(5), "x")[0].F) >= 2
+    with pytest.raises(mc.MeshcutError, match="zu aufwendig"):
+        mc.read_meshes_bytes("obj", _quads_obj(6), "x")
+
+
+def test_triangles_cost_nothing_in_the_polygon_budget(monkeypatch):
+    monkeypatch.setattr(mc, "MAX_POLYGON_WORK", 1)
+    d = ("\n".join(["v 0 0 0", "v 1 0 0", "v 1 1 0"] + ["f 1 2 3"] * 50)).encode()
+    assert mc.read_meshes_bytes("obj", d, "x")
+
+
+def test_five_corners_cost_more_than_a_convex_quad(monkeypatch):
+    d = ("\n".join(["v 0 0 0", "v 1 0 0", "v 1 1 0", "v 0.5 1.5 0", "v 0 1 0", "f 1 2 3 4 5"])).encode()
+    monkeypatch.setattr(mc, "MAX_POLYGON_WORK", 5 * 5 + mc.POLYGON_SLOW_COST - 1)
+    with pytest.raises(mc.MeshcutError, match="zu aufwendig"):
+        mc.read_meshes_bytes("obj", d, "x")
+    monkeypatch.setattr(mc, "MAX_POLYGON_WORK", 5 * 5 + mc.POLYGON_SLOW_COST)
+    assert len(mc.read_meshes_bytes("obj", d, "x")[0].F) == 3
+
+
+def test_concave_quad_takes_the_slow_path_and_costs_extra(monkeypatch):
+    d = ("\n".join(["v 0 0 0", "v 2 0 0", "v 0.5 0.5 0", "v 0 2 0", "f 1 2 3 4"])).encode()
+    monkeypatch.setattr(mc, "MAX_POLYGON_WORK", 16 + mc.POLYGON_SLOW_COST - 1)
+    with pytest.raises(mc.MeshcutError, match="zu aufwendig"):
+        mc.read_meshes_bytes("obj", d, "x")
+    monkeypatch.setattr(mc, "MAX_POLYGON_WORK", 16 + mc.POLYGON_SLOW_COST)
+    m = mc.read_meshes_bytes("obj", d, "x")[0]
+    assert len(m.F) == 2 and abs(mc._face_areas(m.V, m.F).sum() - 1.0) < 1e-12       # Flaeche des konkaven Vierecks (die Huelle waere 2)
+
+
+@pytest.mark.parametrize("pts,convex", [
+    ([(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)], True),
+    ([(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)][::-1], True),                  # andere Umlaufrichtung
+    ([(0, 0, 0), (2, 0, 0), (0.5, 0.5, 0), (0, 2, 0)], False),                  # konkav
+    ([(0, 0, 0), (1, 0, 0), (2, 0, 0), (3, 0, 0)], False),                      # entartet: alles auf einer Geraden
+    ([(0, 0, 0), (1, 0, 0), (1, 1, 1), (0, 1, 0)], True),                       # leicht verwunden, aber konvex
+    ([(0, 0, 0), (1, 1, 0), (1, 0, 0), (0, 1, 0)], False),                      # Schleife (Schmetterling)
+])
+def test_convex_quad_fast_path(pts, convex):
+    assert mc._convex_quad(pts) is convex
+
+
+# ----------------------------------------------------------------------------- Python-Schnittstelle: Tupel und Namen
+def test_python_api_accepts_tuples_for_grid_and_max(tmp_path):
+    src = write_obj(tmp_path / "c.obj", shapes.cube(2.0, lo=(-1, -1, -1)))
+    r = mc.split(src, tmp_path / "a", grid=(2, 2, 1), format="obj")
+    assert len(r["parts"]) == 4
+    r = mc.split(src, tmp_path / "b", max=(1.2, 1.2, 1.2), format="obj")
+    assert r["mode"] == "grid"
+
+
+def test_python_api_rejects_a_comma_inside_a_name(tmp_path):
+    src = write_obj(tmp_path / "c.obj", shapes.cube(2.0, lo=(-1, -1, -1)))
+    with pytest.raises(mc.MeshcutError, match="Komma"):
+        mc.segment(src, tmp_path / "f", parts=2, names=["A,B", "C"], format="obj")
+
+
+@pytest.mark.parametrize("key,val,flag", [("grid", (2, 3), "--grid=2x3"), ("max", [10, 20, 30], "--max=10x20x30"), ("center", (0, 1), "--center=0,1"),
+                                          ("names", ["A", "B"], "--names=A,B")])
+def test_flags_join_sequences(key, val, flag):
+    assert mc._flags({key: val}) == [flag]
+
+
+# ----------------------------------------------------------------------------- Teilnummern ausserhalb des Zahlenbereichs
+@pytest.mark.parametrize("big", [1e19, 2.0 ** 63, 2 ** 63, 2 ** 64 - 1])
+def test_labels_beyond_int64_get_a_clear_message_and_no_warning(big):
+    import warnings
+    mesh = shapes.cube()
+    lab = np.zeros(len(mesh.F), dtype=np.float64 if isinstance(big, float) else np.uint64)
+    lab[::2] = big
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(mc.MeshcutError, match="2.63"):
+            mc.split_labels(mesh, lab)
+
+
+def test_largest_valid_label_still_works():
+    mesh = shapes.cube()
+    lab = np.zeros(len(mesh.F), dtype=np.int64)
+    lab[::2] = 2 ** 63 - 1
+    assert len(mc.split_labels(mesh, lab).parts) == 2
+
+
+# ----------------------------------------------------------------------------- Reste einer frueheren Ausgabe gehen in derselben Transaktion weg
+def _stale_setup(tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    (stage / "part_0.obj").write_text("neu")
+    (out / "part_0.obj").write_text("alt0")
+    (out / "part_1.obj").write_text("alt1")
+    return out, stage
+
+
+def test_dropped_files_leave_with_the_transaction(tmp_path):
+    out, stage = _stale_setup(tmp_path)
+    mc.publish_files(stage, ["part_0.obj"], out, drop=["part_1.obj"])
+    assert sorted(f.name for f in out.iterdir()) == ["part_0.obj"] and (out / "part_0.obj").read_text() == "neu"
+
+
+def test_dropped_files_come_back_when_the_publish_fails(tmp_path, monkeypatch):
+    out, stage = _stale_setup(tmp_path)
+
+    def boom(folder):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(mc, "fsync_dir", boom)
+    with pytest.raises(RuntimeError):
+        mc.publish_files(stage, ["part_0.obj"], out, drop=["part_1.obj"])
+    monkeypatch.undo()
+    assert sorted(f.name for f in out.iterdir()) == ["part_0.obj", "part_1.obj"]
+    assert (out / "part_0.obj").read_text() == "alt0" and (out / "part_1.obj").read_text() == "alt1"
+
+
+def test_crash_after_done_does_not_leave_dropped_files(tmp_path, monkeypatch):
+    out, stage = _stale_setup(tmp_path)
+
+    def boom(folder):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(mc, "rmtree_force", boom)
+    with pytest.raises(KeyboardInterrupt):
+        mc.publish_files(stage, ["part_0.obj"], out, drop=["part_1.obj"])
+    monkeypatch.undo()
+    assert not (out / "part_1.obj").exists()                                  # schon vor dem Aufraeumen weg, nicht erst danach
+    mc.recover_outdir(out)
+    assert sorted(f.name for f in out.iterdir()) == ["part_0.obj"] and (out / "part_0.obj").read_text() == "neu"
+
+
+def test_split_with_fewer_parts_removes_old_extra_parts(tmp_path):
+    src = write_obj(tmp_path / "c.obj", shapes.cube(2.0, lo=(-1, -1, -1)))
+    mc.split(src, tmp_path / "o", plane=["x=0", "y=0"], format="obj")
+    assert len(list((tmp_path / "o").glob("part_*.obj"))) == 4
+    mc.split(src, tmp_path / "o", plane=["x=0"], format="obj")
+    assert sorted(p.name for p in (tmp_path / "o").iterdir()) == ["meshcut.json", "part_0.obj", "part_1.obj"]

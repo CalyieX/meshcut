@@ -15,12 +15,17 @@
 - **Viele Arten zu schneiden:** Ebenen (`x=12.5`, schräg), Gitter (`--grid 2x2x3`), Druckraum (`--max 220x220x250`), Keile um eine Achse (`--wedges 8`) und eine Zuordnungskarte (ein Wert pro Dreieck, z. B. aus einer KI-Segmentierung).
 - **Sauber geschnitten:** Neue Eckpunkte entstehen genau **einmal pro Kante** und werden von beiden Seiten geteilt: keine Spalten, keine T-Kreuzungen. Jeder Schnitt bekommt einen Deckel (auch mit Löchern und Inseln).
 - **KI als Zulieferer, Beweis bleibt:** `meshcut segment` findet Teile (eingebaut, lokales Modell oder gehosteter Dienst) und benennt sie auf Wunsch (`--names Kopf,Arme,Beine` oder `--prompt "trenne Kopf, Arme, Beine"`). Egal woher die Karte kommt: sie läuft durch denselben Weg, `join` und `verify` bleiben exakt.
+- **Ein Satz genügt:** `regions` nummeriert die Elemente eines Modells, `remove` und `swap` entfernen oder ersetzen eines (Loch zu, Material, UV und Normalen bleiben), und eine Prüfzeile sagt, was sich geändert hat und dass der Rest identisch ist. Kein Blender, keine Parameter.
 - **Für Agenten gebaut:** MCP-Server (`meshcut serve --mcp`) und HTTP-API (`meshcut serve --http 8765`), beide nur in einem Wurzelordner.
 - **Läuft überall:** Windows, Mac, Linux; nur numpy als Abhängigkeit; und [im Browser](https://calyiex.github.io/meshcut/) (auch iPhone), ohne Upload.
 
 Gebaut von K&K AI als Schwesterwerkzeug von [pixelcut](https://github.com/CalyieX/pixelcut) (dort Bilder, hier Netze).
 
 ---
+
+## Leitidee
+
+meshcut ist ein KI-Werkzeug mit Harness, kein Modellierprogramm zum Selberklicken. Niemand soll in Blender-Manier stundenlang Löcher flicken, Normalen glätten und Materialien neu zuweisen: Der Assistent nennt das Ziel, meshcut misst am Modell, entscheidet selbst und liefert ein Ergebnis, bei dem man keinen Unterschied zum Original sieht (Schattierung, UV und Materialien bleiben). Jede neue Funktion folgt dem: ein Befehl pro Aufgabe, gute Voreinstellungen statt Parameterlisten, eine Prüfzeile zum Schluss.
 
 ## Warum meshcut? Drei Alleinstellungsmerkmale
 
@@ -67,6 +72,10 @@ OK     hausdorff   Hausdorff (Eckpunkte, ohne Begleitdatei zusammengesetzt) 0, e
 | `meshcut join teil1.stl teil2.stl AUS.stl` | ohne Begleitdatei: Näherung (Deckelpaare weg, Dreiecke bleiben fein) |
 | `meshcut verify ORDNER [--source ORIGINAL]` | prüft den Rundlauf der gespeicherten Dateien |
 | `meshcut segment EIN AUSORDNER [--parts N] [--names a,b,c] [--prompt "…"] [--backend …]` | findet Teile automatisch (und benennt sie), schreibt sie als Zuordnungskarte, prüft den Rundlauf |
+| `meshcut regions EIN AUSORDNER` | nummeriert die Elemente (Teile, Objekte, Gruppen, Materialien): `regions.png` mit Nummern, `regions.json` mit Punkt, Rahmen, Fläche, Material |
+| `meshcut remove EIN --region N` | entfernt ein Element, schließt das Loch sauber (Material, UV, Normalen der Umgebung), schreibt `EIN_edit.obj` |
+| `meshcut swap EIN --region N [--shape box\|sphere\|cylinder]` | ersetzt ein Element durch einen Grundkörper gleicher Größe, mit dem Material des Originals |
+| `meshcut tools` | alle Befehle als Tool-Definition (JSON-Schema) für KI-Assistenten, aus dem Parser erzeugt |
 | `meshcut serve --root ORDNER --mcp` oder `--http PORT` | MCP-Server (stdio) bzw. HTTP-API für Agenten |
 | `meshcut info DATEI` | Eckpunkte, Dreiecke, Volumen, Fläche, wasserdicht, Euler-Zahl, Hash |
 | `meshcut labels DATEI KARTE.npy --grid 2x2x2` | schreibt eine Zuordnungskarte (Teilnummer pro Dreieck) für ein Gitter |
@@ -109,6 +118,25 @@ Sprachmodell zum Benennen (`--prompt`): `ANTHROPIC_API_KEY` (Modell über `MESHC
 
 **Lizenzen der bekannten Modelle (Stand 10.11.2026, vor dem Einsatz selbst prüfen):** PartField (NVIDIA) nur nicht-kommerziell; P3-SAM/Hunyuan3D-Part (Tencent) gilt laut Lizenz nicht in EU, UK und Südkorea; SAMesh hat keine Lizenzdatei; PartCrafter (MIT) erzeugt Teile aus einem Bild, zerlegt aber kein vorhandenes Netz. meshcut bringt keines davon mit, der Adapter ruft nur an, was Sie selbst eingerichtet haben.
 
+## Mit KI-Assistenten bedienen
+
+meshcut ist dafür gebaut, dass ein KI-Assistent (Claude, ChatGPT, Codex und andere) es steuert: ein Befehl pro Aufgabe, klare Fehlerzeilen, Ergebnisse als Dateien. Sag zum Beispiel:
+
+> „Nimm die Antenne vom Roboter ab und schließ die Stelle sauber.“
+> „Ersetze den Knauf durch eine Kugel in derselben Größe, mit demselben Material.“
+> „Teil das Modell so, dass es auf mein Druckbett 220 × 220 passt, und prüf, dass nichts fehlt.“
+
+Der Assistent wählt den Befehl (`regions` + `remove`, `regions` + `swap`, `split --max` + `verify`), meshcut führt ihn exakt aus. meshcut selbst versteht keine Sätze, es ist die verlässliche Ausführung dahinter. Das Modellieren von Hand entfällt: der Assistent sagt, was er will, meshcut erledigt Auswahl, Lochschluss, Material, UV und Normalen selbst.
+
+Das Werkzeug für Assistenten (Harness):
+
+- `meshcut regions modell.obj ordner` nummeriert die erkennbaren Elemente: zusammenhängende Teile, Objekte, Gruppen und Materialien (`regions.png` mit Nummern im Bild, `regions.json` mit Punkt, Rahmen, Fläche, Volumen und Material). Der Assistent schaut das Bild an und nennt die Nummer, ohne Koordinaten zu raten; alternativ wählt `--at x,y,z` das kleinste Element an einem Punkt und `--name` ein Material oder Objekt.
+- `meshcut tools` gibt alle Befehle als Tool-Definition (JSON-Schema) aus, die jeder Agent so registrieren kann. Sie wird aus dem Parser erzeugt und bleibt damit immer aktuell. Der MCP-Server und die HTTP-API bieten `regions`, `remove` und `swap` ebenfalls an.
+- `remove` und `swap` messen am Modell selbst: Das Loch wird eben oder, wenn der Rand windschief ist, mit einem Mittelpunkt geschlossen; Material, UV-Bereich und Normalen kommen von der Umgebung, die Glättung des Ersatzes aus der Form. Der Assistent muss keine Parameter mitliefern (`--shape`, `--axis`, `--scale`, `--material` sind nur Feinschliff).
+- Am Ende steht eine Prüfzeile: „von 24 Dreiecken 2 entfernt, 2 neu dazugekommen; die übrigen 22 sind unverändert (Eckpunkt, UV, Normale, Material verglichen)“. Meshcut liest dafür die geschriebene Datei zurück und vergleicht jede unberührte Fläche; stimmt etwas nicht, bricht es ab.
+
+OBJ wird vollständig mitgeführt (Material, UV, Normalen, Objekt- und Gruppennamen, Glättungsgruppen, `mtllib` wird mitkopiert). STL, PLY, 3MF und GLB tragen nur Geometrie; dort sagt die Prüfzeile das. Die Eingabedatei wird nie überschrieben.
+
 ## Für Agenten: MCP und HTTP
 
 ```bash
@@ -116,7 +144,7 @@ meshcut serve --root ./arbeit --mcp          # MCP über stdin/stdout (Claude, C
 MESHCUT_TOKEN=geheim meshcut serve --root ./arbeit --http 8765
 ```
 
-Werkzeuge: `info`, `split`, `segment`, `join`, `verify` (Schema über `tools/list` bzw. `GET /v1/tools`). Dateien werden nur unterhalb von `--root` gelesen und geschrieben, auch nicht über Links oder `..`. Die HTTP-API bindet an `127.0.0.1`; ohne `MESHCUT_TOKEN` nimmt sie nur Anfragen mit `Host: localhost` und `Content-Type: application/json` an (Schutz vor Angriffen aus dem Browser). Eine andere Adresse (`--host`) geht nur mit Schlüssel (Bearer).
+Werkzeuge: `info`, `split`, `segment`, `join`, `verify`, `regions`, `remove`, `swap` (Schema über `tools/list` bzw. `GET /v1/tools`). Dateien werden nur unterhalb von `--root` gelesen und geschrieben, auch nicht über Links oder `..`. Die HTTP-API bindet an `127.0.0.1`; ohne `MESHCUT_TOKEN` nimmt sie nur Anfragen mit `Host: localhost` und `Content-Type: application/json` an (Schutz vor Angriffen aus dem Browser). Eine andere Adresse (`--host`) geht nur mit Schlüssel (Bearer).
 
 ```bash
 curl -s -H "Authorization: Bearer geheim" -H "Content-Type: application/json" \
@@ -163,6 +191,10 @@ side = mc.split("examples/torus.stl", "teile", plane=["x=0", "z=0"], verify=True
 mc.join("teile", "zurueck.obj")
 r = mc.verify("teile", source="examples/torus.stl")      # {'ok': True, 'checks': [...], ...}
 print(mc.info("examples/torus.stl")["volume"])
+
+mc.regions("figur.obj", "nummern")                          # nummern/regions.png + regions.json
+r = mc.swap("figur.obj", region=3, shape="sphere")          # {'output': 'figur_edit.obj', 'text': '... Pruefung: ...'}
+mc.remove("figur.obj", name="Antenne", out="ohne.obj")
 ```
 
 Die Schnittstelle führt dieselben Befehle aus wie die Kommandozeile (gleiche Optionen mit Unterstrich: `no_cap=True`), schweigt auf stdout und stderr und wirft `mc.MeshcutError` statt das Programm zu beenden. Tiefer unten liegen `Mesh`, `split_planes`, `split_labels`, `triangle_hash`, `mesh_stats` für eigene Abläufe mit numpy-Arrays.
@@ -173,7 +205,7 @@ Die Schnittstelle führt dieselben Befehle aus wie die Kommandozeile (gleiche Op
 
 ## Grenzen (ehrlich)
 
-- **Nur Geometrie.** UV-Koordinaten, Farben, Normalen und Materialien werden nicht übernommen (v0.1); Texturen und Vertexfarben bleiben also nicht erhalten. Eckpunkte mit gleichen Koordinaten werden beim Einlesen verschmolzen (GLB-Nähte, STL-Dreiecksuppe).
+- **`split`, `join`, `segment` behandeln nur Geometrie.** UV-Koordinaten, Farben, Normalen und Materialien werden dort nicht übernommen; Texturen und Vertexfarben bleiben also nicht erhalten. (`regions`, `remove` und `swap` führen sie in OBJ mit, siehe unten.) Eckpunkte mit gleichen Koordinaten werden beim Einlesen verschmolzen (GLB-Nähte, STL-Dreiecksuppe).
 - **Deckel brauchen ein wasserdichtes, nach außen orientiertes Netz.** Sonst bricht `split` mit einer klaren Meldung ab (`--no-cap` schneidet trotzdem, `--flip` dreht die Orientierung).
 - **Keile nur in gerader Zahl.** Ungerade Keilzahlen bräuchten Halbebenen.
 - **Stifte und Passungen** (Dübel, Zapfen/Loch mit Spiel) gibt es in v0.1 noch nicht, ebenso keine Bearbeitung mehrerer Objekte einer Datei auf einmal (3MF/GLB mit mehreren Objekten werden als ein Netz gelesen). manifold3d wird nur in den Tests als unabhängige Gegenprobe benutzt (Volumen der Teile gegen `split_by_plane`), nicht zur Laufzeit.
@@ -184,8 +216,10 @@ Die Schnittstelle führt dieselben Befehle aus wie die Kommandozeile (gleiche Op
 - **32-Bit-Dateien und Topologie.** Bei STL/GLB können nahe beieinanderliegende Schnittpunkte beim Runden auf float32 zusammenfallen; dann meldet `verify` eventuell `wasserdicht`, obwohl der 64-Bit-Satz in Ordnung wäre. Wer das nicht will, nimmt `--format obj`, `ply` oder `3mf`.
 - **Die Begleitdatei ist keine Signatur.** Die Hashes in `meshcut.json` belegen, dass nichts zufällig oder unbemerkt verloren ging oder vertauscht wurde. Wer die Teile *und* `meshcut.json` absichtlich zusammen umschreibt und alle Zahlen neu rechnet, erzeugt einen in sich stimmigen Satz, den `verify` ohne Quelle nicht von einem echten unterscheidet. Für Echtheit gegenüber Dritten: `verify --source ORIGINAL` mit der Originaldatei oder den Hash der Quelle (`source_hash`) getrennt aufbewahren.
 - **Dienst: ein Werkzeug zur Zeit.** Ein Aufruf über MCP/HTTP hält die Sperre, bis er fertig ist, und der HTTP-Dienst hat keine Obergrenze für gleichzeitige Verbindungen (er ist für Vertrauenswürdige gedacht, nicht fürs offene Netz); ein eigener Segmentierungsbefehl darf bis zu einer Stunde laufen. Wer den Dienst teilt, schaltet ihn mit `MESHCUT_TOKEN` ab und lässt nur Vertrauenswürdige heran: jeder Aufrufer kann den eingerichteten Befehl oder das Sprachmodell (Kosten) auslösen.
-- **Eingelesene Dateien sind begrenzt** (Schutz vor Dateien, die klein sind und sich beim Auflösen vervielfachen): höchstens 10 Millionen Dreiecke nach dem Auflösen aller Instanzen (GLB-Knoten, 3MF-Komponenten), 100 000 Knoten-/Komponentenbesuche, 128 MiB entpackte 3MF-Modelldatei, 5000 Ecken je Fläche und eine Gesamtarbeit für Flächen mit mehr als 4 Ecken. Das ist ein Deckel gegen Hänger, kein Speicherschutz: 10 Millionen Dreiecke brauchen mehrere GB Arbeitsspeicher, 3MF-Dateien etwa das 20-fache der XML-Größe. Wer meshcut als Dienst für Fremde betreibt, begrenzt zusätzlich Speicher und Laufzeit des Prozesses selbst.
+- **Eingelesene Dateien sind begrenzt** (Schutz vor Dateien, die klein sind und sich beim Auflösen vervielfachen): höchstens 10 Millionen Dreiecke nach dem Auflösen aller Instanzen (GLB-Knoten, 3MF-Komponenten), 100 000 Knoten-/Komponentenbesuche, 128 MiB entpackte 3MF-Modelldatei, 5000 Ecken je Fläche und ein Arbeitsbudget für alle Flächen mit mehr als drei Ecken (Vierecke zählen ebenfalls; konvexe Vierecke gehen einen schnellen Weg, alles andere kostet mehr). Das ist ein Deckel gegen Hänger, kein Speicherschutz: 10 Millionen Dreiecke brauchen mehrere GB Arbeitsspeicher, 3MF-Dateien etwa das 20-fache der XML-Größe. Wer meshcut als Dienst für Fremde betreibt, begrenzt zusätzlich Speicher und Laufzeit des Prozesses selbst.
 - **Sehr große Koordinaten.** Weit vom Ursprung (ab etwa dem 1e8-fachen der Netzgröße) geht in 64 Bit die Auflösung aus; in STL/GLB (32 Bit) schon ab etwa dem 1e5-fachen. Vorher das Netz in die Nähe des Ursprungs verschieben.
+- **Bearbeiten (`remove`, `swap`) ist kein exakter Schnitt.** Es gibt keinen Rundlauf-Beweis wie bei `split`; stattdessen liest meshcut die geschriebene Datei zurück und belegt, dass jede unberührte Fläche (Eckpunkt-, UV-, Normalen- und Materialtext, Reihenfolge) unverändert ist. Das Schließen eines Lochs und der Ersatz sind eine gute, keine perfekte Wahl: ebene Ränder werden eben gefüllt, windschiefe mit einem Mittelpunkt (flach, ohne die Krümmung der Umgebung fortzusetzen); als Ersatz gibt es Quader, Zylinder und Kugel in der Größe des Originals (keine Nachbildung der Form, keine Textur-Neuberechnung, die UV nehmen den Bereich des Originals). Fehlen dem Modell UV oder Normalen, schreibt meshcut auch keine.
+- **Elemente heißen nach Reihenfolge.** Die Nummern aus `regions` gelten für genau diese Datei in ihrem jetzigen Zustand; nach einer Bearbeitung neu nummerieren. Als Elemente zählen zusammenhängende Teile (über gleiche Eckpunktlage, UV-Nähte trennen nichts), Objekte, Gruppen und Materialien; Elemente, die dieselben Flächen haben wie ein früheres, stehen nicht doppelt da. Linien und Punkte (`l`, `p`) eines OBJ werden nicht übernommen (meshcut sagt es).
 - **Die eingebauten Verfahren sind einfach.** `kmeans` teilt nach Lage, nicht nach Bedeutung; für echte Teilerkennung (Arm, Griff, Rad) braucht es ein Modell über `command` oder `http`. Das ist beabsichtigt: meshcut garantiert, was nach der Karte kommt, nicht die Qualität der Karte.
 - **Höchstens 1024 Teile** (`--grid`, `--max`): wird vor dem Schneiden geprüft.
 - Nichtmanifold-Eckpunkte, an denen sich zwei Teile nur in einem Punkt berühren, sind erlaubt; `verify` zählt sie für die Euler-Zahl getrennt.

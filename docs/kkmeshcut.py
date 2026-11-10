@@ -42,14 +42,15 @@ from pathlib import Path
 
 import numpy as np
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 MAX_PARTS = 1024
 MAX_PLANES = 60
 MAX_READ_TRIANGLES = 10_000_000                                # Dreiecke eines Netzes nach dem Aufloesen aller Instanzen (GLB-Knoten, 3MF-Komponenten)
 MAX_READ_VISITS = 100_000                                      # Knoten-/Komponentenbesuche beim Einlesen
 MAX_XML_BYTES = 1 << 27                                        # 128 MiB: mehr darf die Modelldatei einer 3MF entpackt nicht haben
-MAX_POLYGON_WORK = 100_000_000                                # Summe der Ecken-Quadrate aller Flaechen mit mehr als 4 Ecken je Datei (Ohrenschnitt)
+MAX_POLYGON_WORK = 100_000_000                                # Arbeitsbudget je Datei fuer alle Flaechen mit mehr als 3 Ecken (Ecken-Quadrat; langsamer Weg kostet POLYGON_SLOW_COST mehr)
+POLYGON_SLOW_COST = 1000                                       # Zuschlag, wenn eine Flaeche nicht den schnellen Weg fuer konvexe Vierecke nimmt (numpy-Aufbau, ca. 100 us)
 MAX_POLYGON = 5000                                             # Ecken einer einzelnen Flaeche (OBJ/PLY): der Ohrenschnitt waechst quadratisch
 READ_RECOVER_AGE = 600.0                                      # Sekunden: lesende Befehle raeumen nur Zwischenordner ab, die so alt sind
 PART_NAME = re.compile(r"part_(0|[1-9]\d*)\.(stl|obj|ply)")
@@ -951,9 +952,11 @@ def split_labels(mesh, labels):
             fail("Die Zuordnungskarte muss ganze Zahlen enthalten.")
     elif labels.dtype.kind not in "iub":
         fail("Die Zuordnungskarte muss ganze Zahlen enthalten.")
-    labels = labels.astype(np.int64)
     if len(labels) and labels.min() < 0:
         fail("Teilnummern duerfen nicht negativ sein.")
+    if len(labels) and int(labels.max()) >= 1 << 63:                      # vor dem Umwandeln pruefen: sonst Warnung und falsche Zahl
+        fail("Teilnummern muessen kleiner als 2^63 sein.")
+    labels = labels.astype(np.int64)
     ids = np.unique(labels)
     if len(ids) > MAX_PARTS:
         fail("Das sind %d Teile - mehr als %d sind nicht erlaubt." % (len(ids), MAX_PARTS))
@@ -1149,10 +1152,30 @@ class _PolygonWork:
     def __init__(self):
         self.left = MAX_POLYGON_WORK
 
-    def use(self, k):
-        self.left -= k * k
+    def use(self, cost):
+        self.left -= cost
         if self.left < 0:
-            fail("Die Flaechen mit mehr als 4 Ecken sind zusammen zu aufwendig (Ohrenschnitt) - das Netz vorher in Dreiecke zerlegen.")
+            fail("Die Flaechen mit mehr als 3 Ecken sind zusammen zu aufwendig - das Netz vorher in Dreiecke zerlegen.")
+
+
+def _convex_quad(p):
+    """Konvex und nicht entartet? Schneller Weg fuer Vierecke in reinem Python; im Zweifel False (dann entscheidet der allgemeine Weg)."""
+    n = _cross3(_sub3(p[2], p[0]), _sub3(p[3], p[1]))            # Normale eines Vierecks: Kreuzprodukt der Diagonalen
+    if not any(n):
+        return False
+    for i in range(4):
+        c = _cross3(_sub3(p[(i + 1) % 4], p[i]), _sub3(p[(i + 2) % 4], p[(i + 1) % 4]))
+        if not c[0] * n[0] + c[1] * n[1] + c[2] * n[2] >= 0:
+            return False
+    return True
+
+
+def _sub3(a, b):
+    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+
+
+def _cross3(a, b):
+    return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
 
 
 def _triangulate_polygon(Vs, ids, work=None):
@@ -1162,8 +1185,12 @@ def _triangulate_polygon(Vs, ids, work=None):
         return [(ids[0], ids[1], ids[2])]
     if k > MAX_POLYGON:
         fail("Eine Flaeche hat %d Ecken - mehr als %d werden nicht zerlegt." % (k, MAX_POLYGON))
-    if work is not None and k > 4:
-        work.use(k)
+    if k == 4 and _convex_quad([Vs[i] for i in ids]):               # haeufigster Fall (Quad-Netze): ohne numpy
+        if work is not None:
+            work.use(16)
+        return [(ids[0], ids[1], ids[2]), (ids[0], ids[2], ids[3])]
+    if work is not None:
+        work.use(k * k + POLYGON_SLOW_COST)
     X = np.array([Vs[i] for i in ids], dtype=np.float64)
     X = X - X.mean(axis=0)
     nrm = np.zeros(3)
@@ -1885,7 +1912,7 @@ def recover_outdir(out, min_age=0.0):
     out = Path(out)
     try:
         leftovers = [d for d in out.iterdir() if d.name.startswith(".meshcut_") and d.is_dir() and not link_like(d)]
-        leftovers = [d for d in leftovers if time.time() - d.stat().st_mtime >= min_age and ((d / MARKER).is_file() or (d / JOURNAL).is_file())]
+        leftovers = [d for d in leftovers if (min_age <= 0 or time.time() - d.stat().st_mtime >= min_age) and ((d / MARKER).is_file() or (d / JOURNAL).is_file())]
     except OSError:
         return
     entries = [d for d in leftovers if (d / JOURNAL).is_file()]
@@ -1916,27 +1943,28 @@ def recover_outdir(out, min_age=0.0):
                         os.replace(aside / str(i), out / n)
             rmtree_force(aside)
             print("Hinweis: ein frueherer, abgebrochener Lauf in %s wurde %s." % (out, "abgeschlossen" if j["state"] == "done" else "zurueckgerollt (der alte Satz ist wieder da)"), file=sys.stderr)
-        except (OSError, ValueError, KeyError, TypeError) as e:
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
             print("Hinweis: Aufraeumen von %s nicht moeglich (%s)." % (aside, e), file=sys.stderr)
 
 
-def publish_files(staging, names, out):
+def publish_files(staging, names, out, drop=()):
     """Fertige Dateien aus `staging` nach `out` bringen. Bereits vorhandene Ziele wandern erst zur Seite und kommen bei jedem
     Fehler zurueck - entweder liegt der ganze neue Satz da oder der ganze alte. Ein Journal im Seitenordner macht das auch nach
     hartem Abbruch rueckgaengig (recover_outdir)."""
     out = Path(out)
     aside = new_staging(out)
     installed = []
-    moved = {i: n for i, n in enumerate(names) if (out / n).exists()}
+    allnames = list(names) + [n for n in drop if n not in names]          # `drop`: Dateien einer frueheren Ausgabe, die jetzt wegfallen - gehen mit zur Seite und mit dem Seitenordner weg
+    moved = {i: n for i, n in enumerate(allnames) if (out / n).exists()}
     try:
-        _write_journal(aside, "moving", names, moved)
+        _write_journal(aside, "moving", allnames, moved)
         for i, n in moved.items():
             os.replace(out / n, aside / str(i))
         for n in names:
             installed.append(n)
             os.replace(Path(staging) / n, out / n)
         fsync_dir(out)
-        _write_journal(aside, "done", names, moved)
+        _write_journal(aside, "done", allnames, moved)
     except BaseException:
         stuck = []
         for n in installed:
@@ -1948,9 +1976,9 @@ def publish_files(staging, names, out):
             if not f.name.isdigit():
                 continue
             try:
-                os.replace(f, out / names[int(f.name)])
+                os.replace(f, out / allnames[int(f.name)])
             except OSError as e:
-                stuck.append("%s (%s)" % (names[int(f.name)], e))
+                stuck.append("%s (%s)" % (allnames[int(f.name)], e))
         if stuck:
             print("Fehler: Nicht alles liess sich zurueckholen - die alten Dateien liegen in %s\n  Problem bei: %s" % (aside, "; ".join(stuck)), file=sys.stderr)
         else:
@@ -2016,13 +2044,7 @@ def write_split(res, outdir, fmt, inputs=()):
         allnames = names + [SIDECAR]
         # was eine fruehere Ausgabe hinterlassen hat und jetzt nicht mehr dazugehoert, wird mit zur Seite gelegt
         stale = sorted(n for n in owned if n not in allnames and (out / n).is_file())
-        publish_files(staging, allnames, out)
-        for n in stale:
-            try:
-                os.chmod(out / n, stat.S_IWRITE | stat.S_IREAD)      # ein schreibgeschuetztes Teil aus frueherem Lauf darf nicht bleiben
-                (out / n).unlink()
-            except OSError as e:
-                print("Hinweis: %s aus einem frueheren Lauf liess sich nicht entfernen (%s)" % (n, e), file=sys.stderr)
+        publish_files(staging, allnames, out, drop=stale)
     finally:
         rmtree_force(staging)
     return side
@@ -2191,8 +2213,11 @@ def verify_folder(folder, source=None):
         add("quelle-reihenfolge", sequence_hash(src_mesh.V, src_mesh.F, prec) == side["source"]["order_hash"],
             "Dreiecksreihenfolge der Quelldatei stimmt mit der Begleitdatei ueberein")
         naive = join_plain([Mesh(V, F) for _, V, F in parts]) if side["mode"] != "labels" else joined
-        sF = src_mesh.F[_face_areas(src_mesh.V, src_mesh.F) > 0]          # flaechenlose Dreiecke tragen keine Flaeche bei und fehlen auch im Naeherungs-Zusammensetzen
-        hd, sampled = hausdorff_vertices(src_mesh.V, sF, naive.V, naive.F)
+        # Flaechenlose Dreiecke (auch die Stuecke, in die ein Schnitt sie zerlegt) tragen keine Flaeche bei: auf beiden Seiten weglassen,
+        # sonst zaehlen ihre Eckpunkte allein ueber den Abstand
+        sF = src_mesh.F[_face_areas(src_mesh.V, src_mesh.F) > 0]
+        nF = naive.F[_face_areas(naive.V, naive.F) > 0]
+        hd, sampled = hausdorff_vertices(src_mesh.V, sF, naive.V, nF)
         mag = float(np.abs(src_mesh.V).max()) if len(src_mesh.V) else 0.0
         tol = (1e-9 if prec == "float64" else 1e-6) * max(diag, 1e-300) + (8 * np.finfo(np.float32).eps * mag if prec == "float32" else 0.0)
         add("hausdorff", hd <= tol, "Hausdorff (Eckpunkte, ohne Begleitdatei zusammengesetzt) %.3g, erlaubt %.3g%s" % (hd, tol, " (Stichprobe)" if sampled else ""))
@@ -2464,7 +2489,56 @@ def build_parser(parser_class=argparse.ArgumentParser):
     s.add_argument("input"); s.add_argument("output")
     s.add_argument("--grid", required=True, help="Zellen in x mal y mal z, z. B. 2x2x2")
     s.set_defaults(fn=cmd_labels)
+
+    try:                                                         # Befehle fuer KI-Assistenten (regions, remove, swap); im Browser fehlt das Modul
+        import kkmeshcut_edit
+        kkmeshcut_edit.register(sub)
+    except ImportError:
+        pass
+    s = sub.add_parser("tools", help="alle Befehle als Tool-Definition (JSON-Schema) ausgeben, damit ein KI-Assistent meshcut einbinden kann")
+    s.set_defaults(fn=cmd_tools)
     return p
+
+
+def _tool_schema(sp):
+    props, req = {}, []
+    for act in sp._actions:
+        if act.dest in ("help", "fn") or act.help == argparse.SUPPRESS:
+            continue
+        if act.option_strings:
+            typ = "boolean" if act.nargs == 0 else ("number" if act.type in (float, int) else "string")
+            item = {"type": typ, "description": act.help or ""}
+            if act.type is int:
+                item["type"] = "integer"
+            if act.choices:
+                item["enum"] = list(act.choices)
+            if act.default not in (None, argparse.SUPPRESS) and typ != "boolean":
+                item["default"] = act.default
+            if isinstance(act, argparse._AppendAction):
+                item = {"type": "array", "items": {"type": typ}, "description": act.help or ""}
+            props[act.dest] = item
+            if act.required:
+                req.append(act.dest)
+        else:
+            props[act.dest] = {"type": "array" if act.nargs in ("+", "*") else "string", "description": act.help or ("Pfad: " + act.dest)}
+            if act.nargs in ("+", "*"):
+                props[act.dest]["items"] = {"type": "string"}
+            req.append(act.dest)
+    return {"type": "object", "properties": props, "required": req}
+
+
+def tool_definitions():
+    """Alle Befehle als Tool-Definitionen, aus dem Parser erzeugt (bleibt damit immer aktuell)."""
+    parser = build_parser()
+    sub = next(act for act in parser._actions if isinstance(act, argparse._SubParsersAction))
+    helps = {c.dest: c.help for c in sub._choices_actions}
+    return [{"name": "meshcut_" + name, "description": helps.get(name) or name, "input_schema": _tool_schema(sp)}
+            for name, sp in sub.choices.items() if name not in ("serve", "tools")]
+
+
+def cmd_tools(a):
+    say(json.dumps({"tool_prefix": "meshcut", "usage": "meshcut <Befehl> <Pfade...> --option wert; Ergebnis steht auf stdout, Fehler auf stderr (Exit-Code 1)",
+                    "tools": tool_definitions()}, indent=1, ensure_ascii=False))
 
 
 def oserror_message(e):
@@ -2518,7 +2592,9 @@ def _flags(opts):
                 argv.extend("%s=%s" % (flag, v) for v in val)
         else:
             if isinstance(val, (list, tuple)):
-                val = ",".join(str(v) for v in val)
+                if any("," in str(v) for v in val):
+                    raise MeshcutError("Option '%s': ein Eintrag darf kein Komma enthalten (Eintraege werden mit Komma verbunden)." % key)
+                val = ("x" if key in ("grid", "max") else ",").join(str(v) for v in val)      # Teilungen/Druckraum heissen 2x2x3, der Rest a,b,c
             argv.append("%s=%s" % (flag, val))
     return argv
 
@@ -2602,7 +2678,34 @@ def labels(input, output, grid):
     return Path(output)
 
 
-__all__ = ["__version__", "MeshcutError", "Mesh", "Plane", "split", "segment", "join", "verify", "info", "labels", "load_mesh",
+def regions(input, outdir, **options):
+    """Elemente eines Netzes nummerieren: schreibt regions.png und regions.json nach `outdir`. Rueckgabe: regions.json als dict."""
+    _run("regions", [input, outdir], options)
+    return json.loads((Path(outdir) / "regions.json").read_text(encoding="utf-8"))
+
+
+def _edit(cmd, input, options):
+    text = _run(cmd, [input], options)
+    out = next((ln[len("Geschrieben: "):] for ln in text.splitlines() if ln.startswith("Geschrieben: ")), None)
+    return {"output": out, "text": text}
+
+
+def remove(input, **options):
+    """Ein Element entfernen (region, at oder name; out) und das Loch schliessen. Rueckgabe: {'output': Pfad, 'text': Bericht inkl. Pruefzeile}."""
+    return _edit("remove", input, options)
+
+
+def swap(input, **options):
+    """Ein Element durch einen Grundkoerper ersetzen (region/at/name; shape, axis, scale, material, out). Rueckgabe wie remove."""
+    return _edit("swap", input, options)
+
+
+def tools():
+    """Alle Befehle als Liste von Tool-Definitionen (JSON-Schema)."""
+    return tool_definitions()
+
+
+__all__ = ["__version__", "MeshcutError", "Mesh", "Plane", "split", "segment", "join", "verify", "info", "labels", "regions", "remove", "swap", "tools", "load_mesh",
            "split_planes", "split_labels", "triangle_hash", "mesh_stats", "parse_plane"]
 
 
