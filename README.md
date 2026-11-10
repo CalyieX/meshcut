@@ -7,18 +7,28 @@
 **3D-Netze zerlegen und wieder zusammensetzen, mit Beweis, dass nichts verloren geht.**
 *Cut 3D meshes into parts and put them back together, with a round-trip proof.*
 
-**English in short:** a small command-line tool and Python library that splits triangle meshes (STL, OBJ, GLB, 3MF) by planes, grids, print-bed size, wedges around an axis, or along a per-triangle label map, caps every cut with a watertight lid, and joins the parts back. With the `meshcut.json` sidecar the join restores the *original triangles* and a SHA-256 over the triangle set proves it (bit-exact in 64-bit formats, after float32 rounding in STL/GLB). It also runs in the browser (Pyodide), nothing is uploaded. Everything below is in German.
+**English in short:** a small command-line tool and Python library that splits triangle meshes (STL, OBJ, PLY, GLB, 3MF) by planes, grids, print-bed size, wedges around an axis, or along a per-triangle label map, caps every cut with a watertight lid, and joins the parts back. With the `meshcut.json` sidecar the join restores the *original triangles* and a SHA-256 over the triangle set proves it (bit-exact in 64-bit formats, after float32 rounding in STL/GLB). `meshcut segment` finds (and names) parts automatically - built-in methods, a local model, or any hosted service behind one adapter - and the result is always a per-triangle label map, so the exact join and the proof still apply. An MCP server and an HTTP API expose the same tools to agents. It also runs in the browser (Pyodide), nothing is uploaded. Everything below is in German.
 
 **Auf einen Blick**
 
 - **Rundlauf mit Beweis:** `split` → `join` ergibt dieselben Dreiecke (SHA-256 über die Dreiecksmenge), `verify` prüft zusätzlich Volumen, Fläche, wasserdicht und Euler-Zahl.
 - **Viele Arten zu schneiden:** Ebenen (`x=12.5`, schräg), Gitter (`--grid 2x2x3`), Druckraum (`--max 220x220x250`), Keile um eine Achse (`--wedges 8`) und eine Zuordnungskarte (ein Wert pro Dreieck, z. B. aus einer KI-Segmentierung).
 - **Sauber geschnitten:** Neue Eckpunkte entstehen genau **einmal pro Kante** und werden von beiden Seiten geteilt: keine Spalten, keine T-Kreuzungen. Jeder Schnitt bekommt einen Deckel (auch mit Löchern und Inseln).
+- **KI als Zulieferer, Beweis bleibt:** `meshcut segment` findet Teile (eingebaut, lokales Modell oder gehosteter Dienst) und benennt sie auf Wunsch (`--names Kopf,Arme,Beine` oder `--prompt "trenne Kopf, Arme, Beine"`). Egal woher die Karte kommt: sie läuft durch denselben Weg, `join` und `verify` bleiben exakt.
+- **Für Agenten gebaut:** MCP-Server (`meshcut serve --mcp`) und HTTP-API (`meshcut serve --http 8765`), beide nur in einem Wurzelordner.
 - **Läuft überall:** Windows, Mac, Linux; nur numpy als Abhängigkeit; und [im Browser](https://calyiex.github.io/meshcut/) (auch iPhone), ohne Upload.
 
 Gebaut von K&K AI als Schwesterwerkzeug von [pixelcut](https://github.com/CalyieX/pixelcut) (dort Bilder, hier Netze).
 
 ---
+
+## Warum meshcut? Drei Alleinstellungsmerkmale
+
+Stand der Recherche: 10.11.2026. Die Cloud-Dienste (Meshy Auto Split, Tripo) verändern oder erfinden Geometrie (Verstärkung, „Part Completion“) und verlangen ein Bezahlkonto; KI-Modelle (PartField, SAMesh, P3-SAM) liefern nur Labels ohne Schnitt; Slicer-Werkzeuge (PrusaSlicer, Bambu Studio) und Blender schneiden von Hand und beweisen nichts.
+
+1. **Exakter Schnitt mit Beweis.** Neue Eckpunkte genau einmal pro Kante, ein wasserdichter Deckel je Schnitt, das Original-Netz bleibt außerhalb des Schnitts unverändert. Die Teile sind einzeln geschlossen, und `verify` weist es nach (wasserdicht, Euler, Volumen, Fläche, Deckel auf den Ebenen).
+2. **Rundlauf bitgenau.** `join` stellt die *ursprünglichen Dreiecke* wieder her; ein SHA-256 über die Dreiecksmenge, dazu ein Hash je Teil, belegt es. Auch nach einem Stromausfall mitten im Schreiben bleibt der Ordner entweder ganz alt oder ganz neu.
+3. **Die Zuordnungskarte als offene Schnittstelle.** Jedes Verfahren, das jedem Dreieck eine Teilnummer gibt, kann meshcut füttern: eingebaut, als Befehl für ein lokales Modell, als gehosteter Dienst. Danach ist es dasselbe wie ein Schnitt: exakt zusammensetzbar und nachprüfbar. So bleibt die KI austauschbar, der Beweis bleibt.
 
 ## Installation
 
@@ -56,6 +66,8 @@ OK     hausdorff   Hausdorff (Eckpunkte, ohne Begleitdatei zusammengesetzt) 0, e
 | `meshcut join ORDNER AUS.stl` | setzt die Teile eines Ordners bitgenau wieder zusammen (mit `meshcut.json`) |
 | `meshcut join teil1.stl teil2.stl AUS.stl` | ohne Begleitdatei: Näherung (Deckelpaare weg, Dreiecke bleiben fein) |
 | `meshcut verify ORDNER [--source ORIGINAL]` | prüft den Rundlauf der gespeicherten Dateien |
+| `meshcut segment EIN AUSORDNER [--parts N] [--names a,b,c] [--prompt "…"] [--backend …]` | findet Teile automatisch (und benennt sie), schreibt sie als Zuordnungskarte, prüft den Rundlauf |
+| `meshcut serve --root ORDNER --mcp` oder `--http PORT` | MCP-Server (stdio) bzw. HTTP-API für Agenten |
 | `meshcut info DATEI` | Eckpunkte, Dreiecke, Volumen, Fläche, wasserdicht, Euler-Zahl, Hash |
 | `meshcut labels DATEI KARTE.npy --grid 2x2x2` | schreibt eine Zuordnungskarte (Teilnummer pro Dreieck) für ein Gitter |
 
@@ -70,9 +82,46 @@ meshcut split m.stl out --wedges 8 --axis z             # 8 Keile um die z-Achse
 meshcut split m.stl out --labels karte.npy              # Zuordnungsmodus: Geometrie bleibt unverändert
 ```
 
-Weitere Optionen: `--format stl|obj|3mf|glb` (3MF und GLB legen alle Teile in **eine** Datei), `--no-cap` (ohne Deckel, für offene Netze), `--flip` (Dreiecke umdrehen, wenn das Netz nach innen orientiert ist), `--snap` (siehe unten), `--verify`.
+Weitere Optionen: `--format stl|obj|ply|3mf|glb` (3MF und GLB legen alle Teile in **eine** Datei), `--no-cap` (ohne Deckel, für offene Netze), `--flip` (Dreiecke umdrehen, wenn das Netz nach innen orientiert ist), `--snap` (siehe unten), `--verify`.
 
 **Zuordnungskarte:** eine Datei (`.npy`, `.json` oder `.csv`) mit **einer ganzen Zahl pro Dreieck** (Teilnummer, Lücken erlaubt, höchstens 1024 Teile). So lassen sich Ergebnisse einer Netz-Segmentierung (z. B. PartField, SAMesh, P3-SAM) verwenden: einfach ihre Dreiecks-Labels als `.npy` speichern. meshcut zeichnet selbst nur Gitter-Karten (`meshcut labels`).
+
+## KI: Teile finden und benennen (`segment`)
+
+```bash
+meshcut segment figur.stl teile --parts 3                          # eingebaut: räumliche Gruppen (k-Means), ohne Modell und ohne Netz
+meshcut segment figur.stl teile --names Kopf,Rumpf,Beine --format 3mf   # Anzahl und Namen; Namen werden Objektnamen in 3MF/GLB
+meshcut segment szene.glb teile --backend components               # eigenständige Hüllen (Gehäuse, lose Teile)
+meshcut segment figur.stl teile --prompt "trenne Kopf, Arme, Beine" # Sprachmodell holt die Namen aus dem Satz
+```
+
+Das Ergebnis ist **immer eine Zuordnungskarte** (ein Wert pro Dreieck). Teil 0 ist das höchste Teil (z), dann abwärts, damit Namen stabil bleiben. Die Namen stehen in `meshcut.json` (`names`) und werden beim Einlesen streng geprüft (Buchstaben, Ziffern, Leerzeichen, `- . _`, höchstens 64 Zeichen, eindeutig).
+
+| Verfahren (`--backend`) | Quelle | Einrichtung |
+|---|---|---|
+| `kmeans` (Vorgabe), `components` | eingebaut, deterministisch | keine |
+| `command` | lokales Modell als Befehl (PartField, SAMesh, eigenes Skript) | `MESHCUT_SEGMENTER_CMD='python mein_modell.py {input} {output} {parts}'` |
+| `http` | gehosteter Dienst, der ein GLB annimmt und `{"labels": [...]}` zurückgibt | `MESHCUT_SEGMENT_URL`, `MESHCUT_SEGMENT_KEY` |
+
+Sprachmodell zum Benennen (`--prompt`): `ANTHROPIC_API_KEY` (Modell über `MESHCUT_LLM_MODEL`, Vorgabe `claude-sonnet-5-5`) **oder** ein OpenAI-kompatibler Endpunkt mit `MESHCUT_LLM_URL`, `MESHCUT_LLM_MODEL`, `MESHCUT_LLM_KEY`. Das Modell bekommt nur Namen und Kennzahlen der Teile (Lage, Größe), kein Netz; die Antwort wird geprüft (jeder Name genau einmal, nur bekannte Teile).
+
+**Sicherheit.** Schlüssel kommen nur aus der Umgebung, nie aus Dateien oder Argumenten, und stehen weder in Ausgaben noch in `meshcut.json`. Entfernte Adressen müssen `https` sein (`http` nur für localhost). Es gibt keine Standardanbieter und keinen Netzzugriff ohne ausdrücklich gesetzte Variable.
+
+**Lizenzen der bekannten Modelle (Stand 10.11.2026, vor dem Einsatz selbst prüfen):** PartField (NVIDIA) nur nicht-kommerziell; P3-SAM/Hunyuan3D-Part (Tencent) gilt laut Lizenz nicht in EU, UK und Südkorea; SAMesh hat keine Lizenzdatei; PartCrafter (MIT) erzeugt Teile aus einem Bild, zerlegt aber kein vorhandenes Netz. meshcut bringt keines davon mit, der Adapter ruft nur an, was Sie selbst eingerichtet haben.
+
+## Für Agenten: MCP und HTTP
+
+```bash
+meshcut serve --root ./arbeit --mcp          # MCP über stdin/stdout (Claude, Codex u. a.)
+MESHCUT_TOKEN=geheim meshcut serve --root ./arbeit --http 8765
+```
+
+Werkzeuge: `info`, `split`, `segment`, `join`, `verify` (Schema über `tools/list` bzw. `GET /v1/tools`). Dateien werden nur unterhalb von `--root` gelesen und geschrieben, auch nicht über Links oder `..`. Die HTTP-API bindet an `127.0.0.1`; ohne `MESHCUT_TOKEN` nimmt sie nur Anfragen mit `Host: localhost` und `Content-Type: application/json` an (Schutz vor Angriffen aus dem Browser). Eine andere Adresse (`--host`) geht nur mit Schlüssel (Bearer).
+
+```bash
+curl -s -H "Authorization: Bearer geheim" -H "Content-Type: application/json" \
+  -d '{"input":"figur.stl","outdir":"teile","parts":3}' http://127.0.0.1:8765/v1/segment
+```
 
 ## Was genau garantiert wird
 
@@ -124,14 +173,15 @@ Die Schnittstelle führt dieselben Befehle aus wie die Kommandozeile (gleiche Op
 
 ## Grenzen (ehrlich)
 
-- **Nur Geometrie.** UV-Koordinaten, Farben, Normalen und Materialien werden nicht übernommen (v0.1). Eckpunkte mit gleichen Koordinaten werden beim Einlesen verschmolzen (GLB-Nähte, STL-Dreiecksuppe).
+- **Nur Geometrie.** UV-Koordinaten, Farben, Normalen und Materialien werden nicht übernommen (v0.1); Texturen und Vertexfarben bleiben also nicht erhalten. Eckpunkte mit gleichen Koordinaten werden beim Einlesen verschmolzen (GLB-Nähte, STL-Dreiecksuppe).
 - **Deckel brauchen ein wasserdichtes, nach außen orientiertes Netz.** Sonst bricht `split` mit einer klaren Meldung ab (`--no-cap` schneidet trotzdem, `--flip` dreht die Orientierung).
 - **Keile nur in gerader Zahl.** Ungerade Keilzahlen bräuchten Halbebenen.
-- **Stifte und Passungen** (Dübel, Zapfen/Loch mit Spiel) gibt es in v0.1 noch nicht. manifold3d wird nur in den Tests als unabhängige Gegenprobe benutzt (Volumen der Teile gegen `split_by_plane`), nicht zur Laufzeit.
+- **Stifte und Passungen** (Dübel, Zapfen/Loch mit Spiel) gibt es in v0.1 noch nicht, ebenso keine Bearbeitung mehrerer Objekte einer Datei auf einmal (3MF/GLB mit mehreren Objekten werden als ein Netz gelesen). manifold3d wird nur in den Tests als unabhängige Gegenprobe benutzt (Volumen der Teile gegen `split_by_plane`), nicht zur Laufzeit.
 - **Triangulierung der Deckel** ist gültig und deckungsgleich, aber nicht „schön“: Ohrenschnitt erzeugt gern lange schmale Dreiecke. Für den Druck unkritisch, für Simulation ungeeignet. Läuft der Ohrenschnitt in einen Notfall (Punkte exakt aufeinander), meldet `split` das.
 - **Geschwindigkeit.** Der Kern ist numpy; die Deckel-Triangulierung ist Python. Rund 100 000 Dreiecke in unter einer Sekunde, Deckel mit mehreren tausend Randpunkten brauchen Sekunden.
 - **Ebene durch einen konkaven Eckpunkt oder eine Kante des Netzes:** berühren sich die Teile danach an einer Kante, ist ein Teil nicht wasserdicht. `split` meldet das („Teil … ist nicht wasserdicht“), `verify` ebenfalls.
 - **Sehr große Koordinaten.** Weit vom Ursprung (ab etwa dem 1e8-fachen der Netzgröße) geht in 64 Bit die Auflösung aus; in STL/GLB (32 Bit) schon ab etwa dem 1e5-fachen. Vorher das Netz in die Nähe des Ursprungs verschieben.
+- **Die eingebauten Verfahren sind einfach.** `kmeans` teilt nach Lage, nicht nach Bedeutung; für echte Teilerkennung (Arm, Griff, Rad) braucht es ein Modell über `command` oder `http`. Das ist beabsichtigt: meshcut garantiert, was nach der Karte kommt, nicht die Qualität der Karte.
 - **Höchstens 1024 Teile** (`--grid`, `--max`): wird vor dem Schneiden geprüft.
 - Nichtmanifold-Eckpunkte, an denen sich zwei Teile nur in einem Punkt berühren, sind erlaubt; `verify` zählt sie für die Euler-Zahl getrennt.
 
@@ -143,6 +193,6 @@ python -m pytest -q tests
 MESHCUT_EXAMPLES=300 python -m pytest -q tests/test_property.py     # gründlicher
 ```
 
-Die Tests prüfen unter anderem (Befunde aus den Prüfrunden stehen in `tests/test_review.py`, auch der harte Abbruch mit `os._exit`): Zufallsebenen, Ebenen durch Eckpunkte/Kanten/Flächen (hypothesis), Dreiecke in der Ebene, Keile um eine Achse, Torus/Hohlkugel (Löcher und Inseln im Deckel), alle vier Formate, Absturz-Injektion beim Schreiben, Fremddateien im Ausgabeordner und den Vergleich mit trimesh und manifold3d. Die Browser-Version liegt als Kopie in `docs/kkmeshcut.py`; ein Test stellt sicher, dass beide Dateien gleich sind.
+Die Tests prüfen unter anderem (Befunde aus den Prüfrunden stehen in `tests/test_review.py`, auch der harte Abbruch mit `os._exit`): Zufallsebenen, Ebenen durch Eckpunkte/Kanten/Flächen (hypothesis), Dreiecke in der Ebene, Keile um eine Achse, Torus/Hohlkugel (Löcher und Inseln im Deckel), alle fünf Formate, Absturz-Injektion beim Schreiben, Fremddateien im Ausgabeordner und den Vergleich mit trimesh und manifold3d. Dazu kommt ein Mutationstest (79 absichtlich eingebaute Fehler im Kern, jeder wird von den Tests bemerkt) sowie Tests für KI-Adapter (lokale Fake-Dienste), MCP und HTTP-API. Die Browser-Version liegt als Kopie in `docs/kkmeshcut.py`; ein Test stellt sicher, dass beide Dateien gleich sind.
 
 Lizenz: MIT, © K&K AI.

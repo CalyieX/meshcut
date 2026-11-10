@@ -17,6 +17,9 @@ Befehle
   verify  Rundlauf pruefen: Volumen, Flaeche, wasserdicht, Euler, Hash, Hausdorff
   info    Kennzahlen eines Netzes
   labels  Zuordnungskarte (ein Wert pro Dreieck) fuer ein Gitter schreiben
+  segment Teile automatisch finden (und benennen): eingebaute Verfahren, lokales Modell oder gehosteter Dienst; Ergebnis ist
+          immer eine Zuordnungskarte, also exakt wieder zusammensetzbar (kkmeshcut_ai.py)
+  serve   als MCP-Server (stdio) oder HTTP-API bereitstellen (kkmeshcut_serve.py)
 
 `python kkmeshcut.py BEFEHL -h` zeigt die Optionen.
 """
@@ -42,10 +45,11 @@ __version__ = "0.1.0"
 
 MAX_PARTS = 1024
 MAX_PLANES = 60
-PART_NAME = re.compile(r"part_(0|[1-9]\d*)\.(stl|obj)")
+PART_NAME = re.compile(r"part_(0|[1-9]\d*)\.(stl|obj|ply)")
+NAME_RE = re.compile(r"[\w\-. ]{1,64}")
 MULTI_NAME = {"3mf": "parts.3mf", "glb": "parts.glb"}
 SIDECAR = "meshcut.json"
-FORMATS = ("stl", "obj", "3mf", "glb")
+FORMATS = ("stl", "obj", "ply", "3mf", "glb")
 FLOAT32_FORMATS = ("stl", "glb")
 
 
@@ -847,6 +851,7 @@ class SplitResult:
     def __init__(self, parts, mode, planes, source, split_ids, split_coords, report):
         self.parts, self.mode, self.planes, self.source = parts, mode, planes, source
         self.split_ids, self.split_coords, self.report = split_ids, split_coords, report
+        self.names = None                                       # {Teilnummer: Name}, z. B. von `segment --names`
 
 
 def _compact(V, F):
@@ -1350,6 +1355,146 @@ def read_glb(data):
     return res
 
 
+PLY_TYPES = {"char": "i1", "int8": "i1", "uchar": "u1", "uint8": "u1", "short": "i2", "int16": "i2", "ushort": "u2", "uint16": "u2",
+             "int": "i4", "int32": "i4", "uint": "u4", "uint32": "u4", "float": "f4", "float32": "f4", "double": "f8", "float64": "f8"}
+
+
+def _ply_header(data):
+    end = data.find(b"end_header")
+    if not data.startswith(b"ply") or end < 0:
+        fail("Keine gueltige PLY-Datei.")
+    nl = data.find(b"\n", end)
+    if nl < 0:
+        fail("Keine gueltige PLY-Datei.")
+    fmt, elements = None, []
+    for ln in data[:end].decode("ascii", errors="replace").replace("\r", "").split("\n")[1:]:
+        t = ln.split()
+        if not t or t[0] in ("comment", "obj_info"):
+            continue
+        if t[0] == "format":
+            fmt = t[1]
+        elif t[0] == "element":
+            elements.append([t[1], int(t[2]), []])
+        elif t[0] == "property" and elements:
+            if t[1] == "list":
+                if t[2] not in PLY_TYPES or t[3] not in PLY_TYPES:
+                    fail("PLY: unbekannter Typ in '%s'." % ln.strip())
+                elements[-1][2].append((t[4], (PLY_TYPES[t[2]], PLY_TYPES[t[3]])))
+            else:
+                if t[1] not in PLY_TYPES:
+                    fail("PLY: unbekannter Typ in '%s'." % ln.strip())
+                elements[-1][2].append((t[2], PLY_TYPES[t[1]]))
+    if fmt not in ("ascii", "binary_little_endian", "binary_big_endian"):
+        fail("PLY: Format '%s' nicht unterstuetzt." % fmt)
+    if any(c < 0 for _, c, _ in elements):
+        fail("PLY: negative Anzahl im Kopf.")
+    return fmt, elements, nl + 1
+
+
+def read_ply(data):
+    fmt, elements, pos = _ply_header(data)
+    if not any(e[0] == "vertex" for e in elements) or not any(e[0] == "face" for e in elements):
+        fail("PLY: Eckpunkte und Flaechen noetig.")
+    order = "<" if fmt == "binary_little_endian" else ">"
+    toks = data[pos:].split() if fmt == "ascii" else None
+    ti = 0
+    V = faces = fast = None
+    for name, count, props in elements:
+        if fmt == "ascii":
+            rows = []
+            for _ in range(count):
+                row = []
+                for _, t in props:
+                    if isinstance(t, tuple):
+                        n = int(toks[ti])
+                        if n < 0 or ti + 1 + n > len(toks):
+                            fail("PLY-Datei ist abgeschnitten.")
+                        row.append([float(x) for x in toks[ti + 1:ti + 1 + n]] if name != "face" else [int(x) for x in toks[ti + 1:ti + 1 + n]])
+                        ti += 1 + n
+                    else:
+                        row.append(float(toks[ti]))
+                        ti += 1
+                rows.append(row)
+        else:
+            scalar = all(not isinstance(t, tuple) for _, t in props)
+            if scalar:
+                dt = np.dtype([(n_, order + t) for n_, t in props]) if props else np.dtype([])
+                need = dt.itemsize * count
+                if pos + need > len(data):
+                    fail("PLY-Datei ist abgeschnitten.")
+                arr = np.frombuffer(data, dtype=dt, count=count, offset=pos)
+                pos += need
+                rows = arr
+            else:
+                rows = []
+                if name == "face" and len(props) == 1 and count > 0:               # schneller Weg: lauter gleich lange Listen
+                    ct, it = np.dtype(order + props[0][1][0]), np.dtype(order + props[0][1][1])
+                    if pos + ct.itemsize <= len(data):
+                        n0 = int(np.frombuffer(data, dtype=ct, count=1, offset=pos)[0])
+                        dt = np.dtype([("n", ct), ("i", it, (max(n0, 0),))])
+                        if n0 >= 3 and pos + dt.itemsize * count <= len(data):
+                            arr = np.frombuffer(data, dtype=dt, count=count, offset=pos)
+                            if (arr["n"] == n0).all():
+                                fast = arr["i"].astype(np.int64)
+                                pos += dt.itemsize * count
+                                count = 0
+                for _ in range(count):
+                    row = []
+                    for _, t in props:
+                        if isinstance(t, tuple):
+                            ct, it = np.dtype(order + t[0]), np.dtype(order + t[1])
+                            if pos + ct.itemsize > len(data):
+                                fail("PLY-Datei ist abgeschnitten.")
+                            n = int(np.frombuffer(data, dtype=ct, count=1, offset=pos)[0])
+                            pos += ct.itemsize
+                            if n < 0 or pos + n * it.itemsize > len(data):
+                                fail("PLY-Datei ist abgeschnitten.")
+                            row.append(np.frombuffer(data, dtype=it, count=n, offset=pos).astype(np.int64).tolist())
+                            pos += n * it.itemsize
+                        else:
+                            dt = np.dtype(order + t)
+                            if pos + dt.itemsize > len(data):
+                                fail("PLY-Datei ist abgeschnitten.")
+                            row.append(float(np.frombuffer(data, dtype=dt, count=1, offset=pos)[0]))
+                            pos += dt.itemsize
+                    rows.append(row)
+        cols = [n_ for n_, _ in props]
+        if name == "vertex":
+            if not all(c in cols for c in "xyz"):
+                fail("PLY: x, y, z fehlen.")
+            if fmt != "ascii" and not isinstance(rows, list):
+                V = np.stack([rows[c].astype(np.float64) for c in "xyz"], axis=1)
+            else:
+                ix = [cols.index(c) for c in "xyz"]
+                V = np.array([[r[i] for i in ix] for r in rows], dtype=np.float64).reshape(-1, 3)
+        elif name == "face":
+            key = next((c for c in ("vertex_indices", "vertex_index") if c in cols), None)
+            if key is None:
+                fail("PLY: vertex_indices fehlt.")
+            k = cols.index(key)
+            faces = fast if fast is not None else [r[k] if isinstance(rows, list) else r[key] for r in rows]
+    if V is None or faces is None:
+        fail("PLY: Eckpunkte und Flaechen noetig.")
+    if isinstance(faces, np.ndarray):
+        if faces.size and (faces.min() < 0 or faces.max() >= len(V)):
+            fail("PLY: Flaeche verweist auf einen Eckpunkt, den es nicht gibt.")
+        if faces.shape[1] == 3:
+            return [("", V[faces])]
+        faces = faces.tolist()
+    tris = []
+    for ids in faces:
+        ids = [int(i) for i in ids]
+        if len(ids) < 3:
+            continue
+        if min(ids) < 0 or max(ids) >= len(V):
+            fail("PLY: Flaeche verweist auf einen Eckpunkt, den es nicht gibt.")
+        tris.extend(_triangulate_polygon(V, ids))
+    return [("", V[np.array(tris, dtype=np.int64).reshape(-1, 3)] if tris else np.zeros((0, 3, 3)))]
+
+
+READERS = {"stl": read_stl, "obj": read_obj, "ply": read_ply, "3mf": read_3mf, "glb": read_glb}
+
+
 def detect_format(path, data=None):
     ext = Path(path).suffix.lower().lstrip(".")
     if ext in FORMATS:
@@ -1361,7 +1506,7 @@ def read_meshes(path):
     """Alle Objekte einer Datei als Liste von Mesh (Koordinaten verschmolzen, Reihenfolge des ersten Auftretens)."""
     data = _read_bytes(path)
     fmt = detect_format(path)
-    reader = {"stl": read_stl, "obj": read_obj, "3mf": read_3mf, "glb": read_glb}[fmt]
+    reader = READERS[fmt]
     try:
         objs = reader(data)
     except MeshcutError:
@@ -1401,6 +1546,14 @@ def stl_bytes(V, F):
     rec = np.zeros(n, dtype=np.dtype([("n", "<f4", 3), ("v", "<f4", (3, 3)), ("a", "<u2")]))
     rec["n"], rec["v"] = nrm, P
     return b"meshcut".ljust(80, b"\0") + struct.pack("<I", n) + rec.tobytes()
+
+
+def ply_bytes(V, F, name="part"):
+    head = ("ply\nformat binary_little_endian 1.0\ncomment meshcut %s\nelement vertex %d\nproperty double x\nproperty double y\nproperty double z\n"
+            "element face %d\nproperty list uchar int vertex_indices\nend_header\n" % (__version__, len(V), len(F)))
+    fa = np.zeros(len(F), dtype=np.dtype([("n", "u1"), ("i", "<i4", 3)]))
+    fa["n"], fa["i"] = 3, F
+    return head.encode("ascii") + np.ascontiguousarray(V, dtype="<f8").tobytes() + fa.tobytes()
 
 
 def obj_bytes(V, F, name="part"):
@@ -1469,6 +1622,8 @@ def mesh_bytes(fmt, V, F, name="mesh"):
         return stl_bytes(V, F)
     if fmt == "obj":
         return obj_bytes(V, F, name)
+    if fmt == "ply":
+        return ply_bytes(V, F, name)
     if fmt == "3mf":
         return threemf_bytes([(name, V, F)])
     if fmt == "glb":
@@ -1532,6 +1687,12 @@ def check_sidecar(side):
     src = side["source"]
     if not (isinstance(src, dict) and isinstance(src.get("faces"), int) and src.get("precision") in ("float32", "float64") and isinstance(src.get("hash"), str)):
         raise ValueError("source")
+    if "names" in side:
+        nm = side["names"]
+        if not isinstance(nm, dict) or not all(isinstance(k, str) and k.isdigit() and int(k) in ids and isinstance(v, str) and NAME_RE.fullmatch(v) for k, v in nm.items()):
+            raise ValueError("Teilnamen")
+        if len({v.lower() for v in nm.values()}) != len(nm):
+            raise ValueError("Teilnamen doppelt")
     return sorted(set(names))
 
 
@@ -1553,7 +1714,7 @@ def make_sidecar(res, fmt, stats, files):
     precision = "float32" if fmt in FLOAT32_FORMATS else "float64"
     src = res.source
     q = quantize(src.V, precision)
-    return {"meshcut": 1, "version": __version__, "mode": res.mode, "format": fmt,
+    side = {"meshcut": 1, "version": __version__, "mode": res.mode, "format": fmt,
             "source": {"name": src.name, "faces": int(len(src.F)), "vertices": int(len(src.V)), "precision": precision,
                        "hash": triangle_hash(src.V, src.F, precision), "quantized": bool((q != src.V).any()),
                        "volume": stats["volume"], "area": stats["area"], "diag": stats["diag"]},
@@ -1561,6 +1722,9 @@ def make_sidecar(res, fmt, stats, files):
             "split_ids": enc_array(res.split_ids.astype(np.int64)), "split_coords": enc_array(res.split_coords.astype(np.float64)),
             "parts": [{"id": p.id, "file": files[i][0], "object": files[i][1], "faces": int(len(p.F)), "cap_faces": p.n_cap,
                        "hash": triangle_hash(p.V, p.F, precision), "src": enc_array(p.src.astype(np.int64))} for i, p in enumerate(res.parts)]}
+    if res.names:
+        side["names"] = {str(k): v for k, v in sorted(res.names.items())}
+    return side
 
 
 # ============================================================================= Sicher schreiben
@@ -1689,6 +1853,8 @@ def prepare_outdir(out, new_names, inputs):
 def write_split(res, outdir, fmt, inputs=()):
     """Teile + meshcut.json transaktional schreiben. Rueckgabe: Begleitdaten (dict)."""
     ids = [p.id for p in res.parts]
+    if res.names and not (set(res.names) <= set(ids) and all(NAME_RE.fullmatch(str(v)) for v in res.names.values())):
+        fail("Teilnamen: nur Buchstaben, Ziffern, Leerzeichen, - . _ (hoechstens 64 Zeichen) und nur fuer vorhandene Teile.")
     if fmt in MULTI_NAME:
         files = [(MULTI_NAME[fmt], i) for i in range(len(res.parts))]
         names = [MULTI_NAME[fmt]]
@@ -1702,7 +1868,7 @@ def write_split(res, outdir, fmt, inputs=()):
     staging = Path(tempfile.mkdtemp(prefix=".meshcut_", dir=out))
     try:
         if fmt in MULTI_NAME:
-            objs = [("part_%d" % p.id, p.V, p.F) for p in res.parts]
+            objs = [((res.names or {}).get(p.id) or "part_%d" % p.id, p.V, p.F) for p in res.parts]
             (staging / names[0]).write_bytes(threemf_bytes(objs) if fmt == "3mf" else glb_bytes(objs))
         else:
             for p, (fn, _) in zip(res.parts, files):
@@ -1765,7 +1931,7 @@ def load_parts(folder):
 
 
 def read_meshes_bytes(fmt, data, label):
-    reader = {"stl": read_stl, "obj": read_obj, "3mf": read_3mf, "glb": read_glb}[fmt]
+    reader = READERS[fmt]
     try:
         objs = reader(data)
     except MeshcutError:
@@ -2049,6 +2215,24 @@ def cmd_info(a):
     say("Hash:         %s" % st["hash"])
 
 
+def cmd_segment(a):
+    import kkmeshcut_ai as ai
+    names = [x for x in a.names.split(",")] if a.names else None
+    side = ai.segment_file(a.input, a.outdir, backend=a.backend, parts=a.parts, names=names, prompt=a.prompt, fmt=a.format)
+    say("%d Teile + %s in %s geschrieben (%s, Verfahren %s)." % (len(side["parts"]), SIDECAR, a.outdir, a.format, a.backend))
+    if side.get("names"):
+        say("Namen: " + ", ".join("%s=%s" % kv for kv in side["names"].items()))
+    r = verify_folder(a.outdir, source=a.input)
+    report_verify(r)
+    if not r["ok"]:
+        fail("Pruefung fehlgeschlagen: %s." % ", ".join(c[0] for c in r["checks"] if not c[1]))
+
+
+def cmd_serve(a):
+    import kkmeshcut_serve as serve
+    serve.cmd_serve(a)
+
+
 def cmd_labels(a):
     mesh = load_mesh(a.input)
     counts = parse_counts(a.grid, "--grid")
@@ -2105,6 +2289,22 @@ def build_parser(parser_class=argparse.ArgumentParser):
     s.add_argument("parts")
     s.add_argument("--source", help="Originaldatei fuer den Vergleich (Hash, Hausdorff)")
     s.set_defaults(fn=cmd_verify)
+
+    s = sub.add_parser("segment", help="Teile automatisch finden (und benennen), als Zuordnungskarte schreiben")
+    s.add_argument("input"); s.add_argument("outdir")
+    s.add_argument("--backend", default="kmeans", help="kmeans (Vorgabe) | components | command | http (siehe README, Abschnitt KI)")
+    s.add_argument("--parts", type=int, help="Anzahl der Teile")
+    s.add_argument("--names", help="Teilnamen, mit Komma getrennt (legt auch die Anzahl fest)")
+    s.add_argument("--prompt", help="Auftrag in Worten, z. B. 'trenne Kopf, Arme, Beine' (braucht ein Sprachmodell, Schluessel aus der Umgebung)")
+    s.add_argument("--format", choices=FORMATS, default="stl", help="Dateiformat der Teile")
+    s.set_defaults(fn=cmd_segment)
+
+    s = sub.add_parser("serve", help="als MCP-Server (stdio) oder HTTP-Dienst bereitstellen")
+    s.add_argument("--root", required=True, help="Ordner, in dem gearbeitet werden darf (alles andere bleibt gesperrt)")
+    s.add_argument("--mcp", action="store_true", help="MCP ueber stdin/stdout")
+    s.add_argument("--http", type=int, metavar="PORT", help="HTTP-Dienst auf 127.0.0.1:PORT (Schluessel in MESHCUT_TOKEN)")
+    s.add_argument("--host", default="127.0.0.1", help="Adresse fuer --http (Vorgabe nur dieser Rechner)")
+    s.set_defaults(fn=cmd_serve)
 
     s = sub.add_parser("info", help="Kennzahlen eines Netzes")
     s.add_argument("input")
@@ -2241,12 +2441,18 @@ def info(path):
         raise MeshcutError((str(e).strip().splitlines() or [type(e).__name__])[0]) from e
 
 
+def segment(input, outdir, **options):
+    """Teile automatisch finden (backend, parts, names, prompt, format) und als Zuordnungskarte schreiben. Rueckgabe: meshcut.json als dict."""
+    _run("segment", [input, outdir], options)
+    return json.loads((Path(outdir) / SIDECAR).read_text(encoding="utf-8"))
+
+
 def labels(input, output, grid):
     _run("labels", [input, output], {"grid": grid})
     return Path(output)
 
 
-__all__ = ["__version__", "MeshcutError", "Mesh", "Plane", "split", "join", "verify", "info", "labels", "load_mesh",
+__all__ = ["__version__", "MeshcutError", "Mesh", "Plane", "split", "segment", "join", "verify", "info", "labels", "load_mesh",
            "split_planes", "split_labels", "triangle_hash", "mesh_stats", "parse_plane"]
 
 

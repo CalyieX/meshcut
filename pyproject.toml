@@ -10,7 +10,7 @@ readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.9"
 dependencies = ["numpy>=1.23,<3"]
-keywords = ["3d", "mesh", "stl", "3d-printing", "slicing", "split", "boolean", "3mf", "glb", "obj"]
+keywords = ["3d", "mesh", "stl", "3d-printing", "slicing", "split", "boolean", "3mf", "glb", "obj", "ply", "mcp", "segmentation", "ai"]
 classifiers = [
   "Programming Language :: Python :: 3",
   "License :: OSI Approved :: MIT License",
@@ -31,4 +31,4 @@ check = ["pytest", "hypothesis", "trimesh", "manifold3d", "shapely", "mapbox-ear
 meshcut = "kkmeshcut:main"
 
 [tool.setuptools]
-py-modules = ["kkmeshcut"]
+py-modules = ["kkmeshcut", "kkmeshcut_ai", "kkmeshcut_serve"]

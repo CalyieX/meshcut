@@ -44,8 +44,8 @@
       <option value="info">Kennzahlen anzeigen</option>
     </select>
 
-    <label for="files" id="fileLabel">3D-Datei (STL, OBJ, GLB, 3MF)</label>
-    <input id="files" type="file" accept=".stl,.obj,.glb,.3mf">
+    <label for="files" id="fileLabel">3D-Datei (STL, OBJ, PLY, GLB, 3MF)</label>
+    <input id="files" type="file" accept=".stl,.obj,.ply,.glb,.3mf">
 
     <div id="splitOpts">
       <label for="how">Art des Schnitts</label>
@@ -65,7 +65,7 @@
         </div>
       </div>
       <label for="format">Dateiformat der Teile</label>
-      <select id="format"><option value="stl">STL</option><option value="obj">OBJ (genau, 64 Bit)</option><option value="3mf">3MF (alle Teile in einer Datei)</option><option value="glb">GLB (alle Teile in einer Datei)</option></select>
+      <select id="format"><option value="stl">STL</option><option value="obj">OBJ (genau, 64 Bit)</option><option value="ply">PLY (genau, 64 Bit)</option><option value="3mf">3MF (alle Teile in einer Datei)</option><option value="glb">GLB (alle Teile in einer Datei)</option></select>
       <div class="check"><input id="nocap" type="checkbox"><label for="nocap" style="margin:0;color:inherit">Ohne Deckel schneiden (für offene Netze)</label></div>
       <div class="check"><input id="flip" type="checkbox"><label for="flip" style="margin:0;color:inherit">Dreiecke umdrehen (Netz ist nach innen orientiert)</label></div>
       <small>Mit der Begleitdatei meshcut.json setzt das Zusammensetzen die Original-Dreiecke wieder her, bitgenau.</small>
@@ -73,7 +73,7 @@
 
     <div id="joinOpts" hidden>
       <label for="jformat">Dateiformat des Ergebnisses</label>
-      <select id="jformat"><option value="stl">STL</option><option value="obj">OBJ</option><option value="3mf">3MF</option><option value="glb">GLB</option></select>
+      <select id="jformat"><option value="stl">STL</option><option value="obj">OBJ</option><option value="ply">PLY</option><option value="3mf">3MF</option><option value="glb">GLB</option></select>
     </div>
 
     <button id="go" disabled>Lade Programm&hellip;</button>
@@ -137,8 +137,8 @@ function layout() {
   $("joinOpts").hidden = c !== "join";
   for (const k of ["grid", "plane", "max", "wedge"]) $(k + "Box").hidden = (c !== "split") || (k === "wedge" ? how !== "wedges" : how !== k);
   const f = $("files");
-  if (c === "join" || c === "verify") { f.multiple = true; f.accept = ".stl,.obj,.glb,.3mf,.json"; $("fileLabel").textContent = "Alle Teile (part_0.stl, … oder parts.3mf) und meshcut.json"; }
-  else { f.multiple = false; f.accept = ".stl,.obj,.glb,.3mf"; $("fileLabel").textContent = "3D-Datei (STL, OBJ, GLB, 3MF)"; }
+  if (c === "join" || c === "verify") { f.multiple = true; f.accept = ".stl,.obj,.ply,.glb,.3mf,.json"; $("fileLabel").textContent = "Alle Teile (part_0.stl, … oder parts.3mf) und meshcut.json"; }
+  else { f.multiple = false; f.accept = ".stl,.obj,.ply,.glb,.3mf"; $("fileLabel").textContent = "3D-Datei (STL, OBJ, PLY, GLB, 3MF)"; }
   f.value = "";
 }
 $("cmd").addEventListener("change", layout);
@@ -156,7 +156,7 @@ function wipe() { for (const d of ["/work/in", "/work/out"]) { try { py.runPytho
 const PLANE_RE = /^(?:[xyz]=[-+]?\d*\.?\d+(?:e[-+]?\d+)?|(?:[-+]?\d*\.?\d+(?:e[-+]?\d+)?,){3}[-+]?\d*\.?\d+(?:e[-+]?\d+)?)$/i;
 const COUNT_RE = /^\d+x\d+(?:x\d+)?$/i;
 const SIZE_RE = /^[0-9.]+x[0-9.]+(?:x[0-9.]+)?$/i;
-const PART_RE = /^(?:part_(?:0|[1-9]\d*)\.(?:stl|obj)|parts\.(?:3mf|glb)|meshcut\.json)$/;
+const PART_RE = /^(?:part_(?:0|[1-9]\d*)\.(?:stl|obj|ply)|parts\.(?:3mf|glb)|meshcut\.json)$/;
 
 async function go() {
   clearResults();
@@ -196,15 +196,15 @@ async function go() {
     py.FS.mkdirTree("/work/in"); py.FS.mkdirTree("/work/out");
     let argv;
     for (const f of files) {
-      const ext = (f.name.match(/\.(stl|obj|3mf|glb)$/i) || [""])[0].toLowerCase();
+      const ext = (f.name.match(/\.(stl|obj|ply|3mf|glb)$/i) || [""])[0].toLowerCase();
       const name = (cmd === "split" || cmd === "info") ? "input" + ext : f.name;
       py.FS.writeFile("/work/in/" + name, new Uint8Array(await f.arrayBuffer()));
     }
     if (cmd === "split") {
-      const ext = (files[0].name.match(/\.(stl|obj|3mf|glb)$/i) || [""])[0].toLowerCase();
+      const ext = (files[0].name.match(/\.(stl|obj|ply|3mf|glb)$/i) || [""])[0].toLowerCase();
       argv = ["split", "/work/in/input" + ext, "/work/out/parts"].concat(opts);
     } else if (cmd === "info") {
-      const ext = (files[0].name.match(/\.(stl|obj|3mf|glb)$/i) || [""])[0].toLowerCase();
+      const ext = (files[0].name.match(/\.(stl|obj|ply|3mf|glb)$/i) || [""])[0].toLowerCase();
       argv = ["info", "/work/in/input" + ext];
     } else if (cmd === "verify") argv = ["verify", "/work/in"];
     else argv = ["join", "/work/in", "/work/out/joined." + $("jformat").value];
