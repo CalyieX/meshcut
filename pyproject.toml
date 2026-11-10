@@ -25,7 +25,7 @@ Issues = "https://github.com/CalyieX/meshcut/issues"
 
 [project.optional-dependencies]
 test = ["pytest", "hypothesis"]
-check = ["pytest", "hypothesis", "trimesh", "manifold3d", "shapely", "mapbox-earcut", "rtree", "networkx"]
+check = ["pytest", "hypothesis", "trimesh", "manifold3d", "shapely", "mapbox-earcut", "rtree", "networkx", "scipy"]
 
 [project.scripts]
 meshcut = "kkmeshcut:main"
