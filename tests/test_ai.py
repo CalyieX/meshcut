@@ -878,3 +878,106 @@ def test_label_files_never_unpickle(tmp_path):
     np.save(p, np.array([{"a": 1}, 2], dtype=object), allow_pickle=True)
     with pytest.raises(mc.MeshcutError, match="unlesbar"):
         mc.read_label_file(p)
+
+
+# ----------------------------------------------------------------------------- Runde 3: abgeleitete Pfade und Geschwisterbefehle
+@pytest.mark.parametrize("tool", ["split", "segment"])
+@pytest.mark.parametrize("fmt", ["stl/../../../outside/secret.txt", "exe", "", 5, "STL "])
+def test_format_is_checked_in_every_tool(tmp_path, tool, fmt):
+    root = tmp_path / "root"
+    root.mkdir()
+    write(root / "f.obj", shapes.cube(1.0))
+    tools = serve.Tools(serve.Sandbox(root))
+    args = {"input": "f.obj", "outdir": "o", "format": fmt, "plane": ["x=0.5"]} if tool == "split" else {"input": "f.obj", "outdir": "o", "format": fmt, "parts": 2}
+    with pytest.raises(mc.MeshcutError, match="moeglich sind"):
+        serve.call_tool(tools, tool, args)
+    assert not (root / "o").exists() or not any((root / "o").iterdir())
+
+
+def test_core_refuses_unknown_formats_too(tmp_path):
+    write(tmp_path / "f.obj", shapes.cube(1.0))
+    with pytest.raises(mc.MeshcutError, match="gibt es nicht"):
+        ai.segment_file(tmp_path / "f.obj", tmp_path / "o", parts=2, fmt="../x")
+
+
+def test_split_labels_must_stay_inside_the_root(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    write(root / "f.obj", shapes.cube(1.0))
+    (tmp_path / "aussen.txt").write_text("\n".join(["0", "1"] * 6))
+    tools = serve.Tools(serve.Sandbox(root))
+    with pytest.raises(mc.MeshcutError, match="ausserhalb"):
+        serve.call_tool(tools, "split", {"input": "f.obj", "outdir": "o", "labels": str(tmp_path / "aussen.txt")})
+
+
+@pytest.mark.parametrize("src", ["", 0, [], False])
+def test_verify_tool_refuses_a_malformed_source_instead_of_skipping_it(tmp_path, src):
+    write(tmp_path / "f.obj", shapes.cube(1.0))
+    tools = serve.Tools(serve.Sandbox(tmp_path))
+    serve.call_tool(tools, "split", {"input": "f.obj", "outdir": "o", "plane": ["x=0.5"]})
+    with pytest.raises(mc.MeshcutError):
+        serve.call_tool(tools, "verify", {"parts": "o", "source": src})
+
+
+def test_verify_tool_compares_with_the_given_source(tmp_path):
+    write(tmp_path / "f.obj", shapes.cube(1.0))
+    write(tmp_path / "g.obj", shapes.cube(2.0))
+    tools = serve.Tools(serve.Sandbox(tmp_path))
+    serve.call_tool(tools, "split", {"input": "f.obj", "outdir": "o", "plane": ["x=0.5"]})
+    good = serve.call_tool(tools, "verify", {"parts": "o", "source": "f.obj"})
+    bad = serve.call_tool(tools, "verify", {"parts": "o", "source": "g.obj"})
+    assert good["ok"] and "quelle" in [c["name"] for c in good["checks"]]
+    assert not bad["ok"] and "quelle" in [c["name"] for c in bad["checks"] if not c["ok"]]
+
+
+def test_verify_notices_a_reordered_source_file(tmp_path):
+    mesh = shapes.cube(2.0, sub=2)
+    src = write_obj_ai(tmp_path / "f.obj", mesh)
+    mc.split(src, tmp_path / "o", plane=["x=1"])
+    perm = np.arange(len(mesh.F))[::-1]
+    write_obj_ai(src, mc.Mesh(mesh.V, mesh.F[perm]))             # gleiche Dreiecke, andere Reihenfolge
+    r = mc.verify(tmp_path / "o", src)
+    failed_names = [c[0] for c in r["checks"] if not c[1]]
+    assert "quelle-reihenfolge" in failed_names and "quelle" not in failed_names
+
+
+def write_obj_ai(path, mesh):
+    Path(path).write_bytes(mc.mesh_bytes("obj", mesh.V, mesh.F))
+    return Path(path)
+
+
+def test_sidecar_without_order_hash_is_refused(tmp_path):
+    src = write(tmp_path / "f.obj", shapes.cube(1.0))
+    mc.split(src, tmp_path / "o", plane=["x=0.5"])
+    p = tmp_path / "o" / "meshcut.json"
+    side = json.loads(p.read_text())
+    del side["source"]["order_hash"]
+    p.write_text(json.dumps(side))
+    with pytest.raises(mc.MeshcutError):
+        mc.verify(tmp_path / "o")
+    with pytest.raises(ValueError, match="source"):
+        mc.check_sidecar(side)                                   # schon die Pruefung der Begleitdatei verlangt das Feld
+
+
+def test_sequence_hash_depends_on_precision():
+    m = shapes.cube(1.0)
+    assert mc.sequence_hash(m.V, m.F, "float64") != mc.sequence_hash(m.V, m.F, "float32")
+
+
+def test_sandbox_follows_links_out_of_the_root_never(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    out = tmp_path / "aussen"
+    out.mkdir()
+    link = root / "ziel"
+    if os.name == "nt":                                          # Junction braucht keine Sonderrechte
+        r = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(out)], capture_output=True, stdin=subprocess.DEVNULL, creationflags=0x08000000)
+        if r.returncode:
+            pytest.skip("Junction nicht moeglich")
+    else:
+        try:
+            os.symlink(out, link, target_is_directory=True)
+        except OSError:
+            pytest.skip("keine Symlinks erlaubt")
+    with pytest.raises(mc.MeshcutError, match="ausserhalb"):
+        serve.Sandbox(root).path("ziel/x.obj", "p")

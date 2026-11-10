@@ -156,6 +156,21 @@ MUTANTS = [
     ('r2 kern: Dreiecksreihenfolge nicht hergestellt', '    P, S = P[order], S[order]\n    nfaces', '    S = S[order]\n    nfaces'),
     ('r2 kern: Reihenfolge-Hash nicht geprueft (verify)', 'add("reihenfolge", oh == side["source"]["order_hash"],', 'add("reihenfolge", True,'),
     ('r2 kern: Reihenfolge-Hash nicht geprueft (join)', 'if sequence_hash(mesh.V, mesh.F, prec) != side["source"]["order_hash"]:', 'if False:'),
+    ('r3 kern: flaechenlose Dreiecke nicht in split_ids', 'return np.nonzero(~whole)[0].astype(np.int64)', 'return np.nonzero(cnt > 1)[0].astype(np.int64)'),
+    ('r3 kern: lesende Befehle raeumen sofort', 'READ_RECOVER_AGE = 600.0', 'READ_RECOVER_AGE = 0.0'),
+    ('r3 kern: Alter der Reste ignoriert', 'if time.time() - d.stat().st_mtime >= min_age]', 'if True]'),
+    ('r3 kern: Format beim Schreiben ungeprueft', '    if fmt not in FORMATS:\n        fail("Format \'%s\' gibt es nicht', '    if False:\n        fail("Format \'%s\' gibt es nicht'),
+    ('r3 kern: Quellreihenfolge ungeprueft', 'add("quelle-reihenfolge", sequence_hash(src_mesh.V, src_mesh.F, prec) == side["source"]["order_hash"],', 'add("quelle-reihenfolge", True,'),
+    ('r3 kern: order_hash nicht Pflicht', 'and isinstance(src.get("order_hash"), str)):', '):'),
+    ('r3 kern: Sequenz-Hash ohne Praezision', 'h.update(b"meshcut-seq-1:" + precision.encode() + b":")', 'h.update(b"meshcut-seq-1:")'),
+    ('r3 kern: Besuche nicht gezaehlt', 'self.visits -= 1', 'self.visits -= 0'),
+    ('r3 kern: Dreiecke nicht gezaehlt', 'self.tris -= int(n)', 'self.tris -= 0'),
+    ('r3 kern: 3MF entpackt unbegrenzt', 'if len(xml) > MAX_XML_BYTES:', 'if False:'),
+    ('r3 kern: Polygon unbegrenzt', 'if k > MAX_POLYGON:', 'if False:'),
+    ('r3 kern: kein fsync', 'os.fsync(fh.fileno())', 'pass'),
+    ('r3 serve: Format nicht geprueft', 'if v not in mc.FORMATS:', 'if False:', "kkmeshcut_serve.py"),
+    ('r3 serve: verify-Quelle leer uebersprungen', 'source=None if src is None else self.sb.path(src, "source")', 'source=self.sb.path(src, "source") if src else None', "kkmeshcut_serve.py"),
+    ('r3 serve: labels ohne Sandbox', 'opts[key] = self.sb.path(v, "labels") if key == "labels" else v', 'opts[key] = v', "kkmeshcut_serve.py"),
 ]
 
 

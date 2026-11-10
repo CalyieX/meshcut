@@ -35,6 +35,7 @@ import stat
 import struct
 import sys
 import tempfile
+import time
 import zipfile
 import zlib
 from pathlib import Path
@@ -45,6 +46,11 @@ __version__ = "0.1.0"
 
 MAX_PARTS = 1024
 MAX_PLANES = 60
+MAX_READ_TRIANGLES = 50_000_000                                # Dreiecke eines Netzes nach dem Aufloesen aller Instanzen (GLB-Knoten, 3MF-Komponenten)
+MAX_READ_VISITS = 100_000                                      # Knoten-/Komponentenbesuche beim Einlesen
+MAX_XML_BYTES = 1 << 28                                        # 256 MiB: mehr darf die Modelldatei einer 3MF entpackt nicht haben
+MAX_POLYGON = 5000                                             # Ecken einer einzelnen Flaeche (OBJ/PLY): der Ohrenschnitt waechst quadratisch
+READ_RECOVER_AGE = 600.0                                      # Sekunden: lesende Befehle raeumen nur Zwischenordner ab, die so alt sind
 PART_NAME = re.compile(r"part_(0|[1-9]\d*)\.(stl|obj|ply)")
 NAME_RE = re.compile(r"[\w\-. ]{1,64}")
 MULTI_NAME = {"3mf": "parts.3mf", "glb": "parts.glb"}
@@ -895,6 +901,20 @@ def check_cuttable(mesh, flip=False):
         fail("Das Netz ist nach innen orientiert (negatives Volumen) - mit --flip umdrehen.")
 
 
+def _split_ids(mesh, parts):
+    """Quelldreiecke, die der Schnitt veraendert hat: alles, was nicht als genau ein unveraendertes Stueck in einem Teil liegt. Dazu zaehlen auch
+    flaechenlose Dreiecke, von denen nur ein (oder gar kein) Bruchstueck uebrig bleibt - join setzt fuer sie die Original-Koordinaten ein."""
+    n = len(mesh.F)
+    srcs = np.concatenate([p.src for p in parts])
+    tris = np.concatenate([p.V[p.F[:len(p.F) - p.n_cap]] for p in parts]) if len(srcs) else np.zeros((0, 3, 3))
+    cnt = np.bincount(srcs, minlength=n)
+    first = np.zeros(n, np.int64)
+    first[srcs] = np.arange(len(srcs))
+    whole = cnt == 1
+    whole[whole] = (tris[first[whole]] == mesh.V[mesh.F[whole]]).all(axis=(1, 2))
+    return np.nonzero(~whole)[0].astype(np.int64)
+
+
 def split_planes(mesh, planes, cap=True, table=None, mode="plane", snap=1e-12):
     """Zerlegt `mesh` an den Ebenen. Jede Ebene hat ein Gewicht; Teilnummer = Summe der Gewichte der Ebenen, hinter denen
     das Teil liegt (Gitter: Zellnummer, sonst Bitmaske)."""
@@ -916,9 +936,7 @@ def split_planes(mesh, planes, cap=True, table=None, mode="plane", snap=1e-12):
         fail("Das ergibt %d Teile - mehr als %d sind nicht erlaubt." % (len(parts), MAX_PARTS))
     if len(parts) < 2:
         fail("Die Ebene(n) schneiden das Netz nicht - es bleibt ein einziges Teil.")
-    srcs = np.concatenate([p.src for p in parts])
-    u, c = np.unique(srcs, return_counts=True)
-    split_ids = u[c > 1]
+    split_ids = _split_ids(mesh, parts)
     split_coords = mesh.V[mesh.F[split_ids]]
     return SplitResult(parts, mode, planes, mesh, split_ids, split_coords, report)
 
@@ -974,8 +992,6 @@ def join_with_sidecar(parts_data, side):
     split_coords = dec_array(side["split_coords"]).reshape(-1, 3, 3)
     if len(split_ids):
         is_split = np.isin(S, split_ids)
-        if not np.isin(split_ids, S[is_split]).all():
-            fail("Teile fehlen: zerschnittene Dreiecke sind nicht vollstaendig vorhanden.")
         P = np.concatenate([P[~is_split], split_coords])
         S = np.concatenate([S[~is_split], split_ids])
     order = np.argsort(S, kind="stable")
@@ -1128,6 +1144,8 @@ def _triangulate_polygon(Vs, ids):
     k = len(ids)
     if k == 3:
         return [(ids[0], ids[1], ids[2])]
+    if k > MAX_POLYGON:
+        fail("Eine Flaeche hat %d Ecken - mehr als %d werden nicht zerlegt." % (k, MAX_POLYGON))
     X = np.array([Vs[i] for i in ids], dtype=np.float64)
     X = X - X.mean(axis=0)
     nrm = np.zeros(3)
@@ -1199,6 +1217,23 @@ def _xml_local(tag):
     return tag.rsplit("}", 1)[-1]
 
 
+class _ReadBudget:
+    """Deckel fuer Dateien, die wenige Byte gross sind, sich beim Aufloesen aber vervielfachen (Instanzen, Komponenten)."""
+
+    def __init__(self, what):
+        self.what, self.tris, self.visits = what, MAX_READ_TRIANGLES, MAX_READ_VISITS
+
+    def visit(self):
+        self.visits -= 1
+        if self.visits < 0:
+            fail("%s: mehr als %d Knoten/Komponenten - die Datei vervielfacht sich beim Aufloesen." % (self.what, MAX_READ_VISITS))
+
+    def triangles(self, n):
+        self.tris -= int(n)
+        if self.tris < 0:
+            fail("%s: mehr als %d Dreiecke nach dem Aufloesen aller Instanzen." % (self.what, MAX_READ_TRIANGLES))
+
+
 def read_3mf(data):
     import io
     import xml.etree.ElementTree as ET
@@ -1207,7 +1242,11 @@ def read_3mf(data):
         names = [n for n in z.namelist() if n.lower().endswith(".model")]
         if not names:
             fail("3MF ohne Modelldatei.")
-        root = ET.fromstring(z.read(next((n for n in names if n.lower() == "3d/3dmodel.model"), names[0])))
+        with z.open(next((n for n in names if n.lower() == "3d/3dmodel.model"), names[0])) as fh:
+            xml = fh.read(MAX_XML_BYTES + 1)
+        if len(xml) > MAX_XML_BYTES:
+            fail("3MF: die Modelldatei ist entpackt groesser als %d MiB." % (MAX_XML_BYTES >> 20))
+        root = ET.fromstring(xml)
     except zipfile.BadZipFile:
         fail("Keine gueltige 3MF-Datei (kein ZIP).")
     unit = (root.get("unit") or "millimeter").lower()
@@ -1241,7 +1280,10 @@ def read_3mf(data):
         M[3, :3] = v[9:]
         return M
 
+    budget = _ReadBudget("3MF")
+
     def tris_of(oid, M, depth=0):
+        budget.visit()
         if depth > 8 or oid not in objects:
             fail("3MF: Objekt %s fehlt." % oid)
         _, mesh, comps = objects[oid]
@@ -1257,6 +1299,7 @@ def read_3mf(data):
                 return out
             if tris.min() < 0 or tris.max() >= len(verts):
                 fail("3MF: Dreieck verweist auf einen Eckpunkt, den es nicht gibt.")
+            budget.triangles(len(tris))
             P = verts[tris]
             if M is not None:
                 P = (np.concatenate([P.reshape(-1, 3), np.ones((P.size // 3, 1))], axis=1) @ M)[:, :3].reshape(-1, 3, 3)
@@ -1327,7 +1370,10 @@ def read_glb(data):
         return T @ R @ S
     res = []
 
+    budget = _ReadBudget("GLB")
+
     def walk(ni, parent, depth=0):
+        budget.visit()
         if depth > 32:
             fail("GLB: Knoten zu tief verschachtelt.")
         nd = js["nodes"][ni]
@@ -1348,6 +1394,7 @@ def read_glb(data):
                 Ff = Ff.reshape(-1, 3)
                 if len(Ff) and (Ff.min() < 0 or Ff.max() >= len(Vv)):
                     fail("GLB: Dreieck verweist auf einen Eckpunkt, den es nicht gibt.")
+                budget.triangles(len(Ff))
                 P = Vv[Ff]
                 P = (np.concatenate([P.reshape(-1, 3), np.ones((P.size // 3, 1))], axis=1) @ M.T)[:, :3].reshape(-1, 3, 3)
                 if np.linalg.det(M[:3, :3]) < 0:                # Spiegelung: glTF verlangt umgekehrten Umlaufsinn
@@ -1709,7 +1756,7 @@ def check_sidecar(side):
 
 def load_sidecar(folder):
     if Path(folder).is_dir() and not link_like(folder):
-        recover_outdir(folder)
+        recover_outdir(folder, min_age=READ_RECOVER_AGE)
     p = Path(folder) / SIDECAR
     if not p.is_file():
         return None
@@ -1757,18 +1804,47 @@ def rmtree_force(folder):
 JOURNAL = "journal.json"
 
 
+def write_durable(path, data):
+    """Datei schreiben und auf den Datentraeger zwingen (fsync), bevor jemand sie umbenennt: sonst kann nach einem Stromausfall der neue
+    Name auf eine leere Datei zeigen."""
+    with open(path, "wb") as fh:
+        fh.write(data)
+        fh.flush()
+        try:
+            os.fsync(fh.fileno())
+        except OSError:                                         # Dateisysteme ohne fsync (z. B. im Browser)
+            pass
+
+
+def fsync_dir(folder):
+    """Ordnereintraege (Umbenennungen) sichern. Unter Windows nicht moeglich - dort verlaesst sich meshcut auf das Journal von NTFS."""
+    if os.name == "nt":
+        return
+    try:
+        fd = os.open(str(folder), os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError:
+        pass
+
+
 def _write_journal(aside, state, names, moved):
     tmp = aside / (JOURNAL + ".tmp")
-    tmp.write_text(json.dumps({"state": state, "names": names, "moved": moved}), encoding="utf-8")
+    write_durable(tmp, json.dumps({"state": state, "names": names, "moved": moved}).encode("utf-8"))
     os.replace(tmp, aside / JOURNAL)
+    fsync_dir(aside)
 
 
-def recover_outdir(out):
+def recover_outdir(out, min_age=0.0):
     """Raeumt nach einem harten Abbruch (Stromausfall, kill -9) mitten im Ersetzen auf: war das Ersetzen noch nicht fertig,
-    kommt der ganze alte Satz zurueck; war es fertig, wird nur der Rest weggeraeumt."""
+    kommt der ganze alte Satz zurueck; war es fertig, wird nur der Rest weggeraeumt. `min_age` (Sekunden): juengere Zwischenordner
+    gehoeren vielleicht einem Lauf, der gerade schreibt - lesende Befehle lassen sie in Ruhe."""
     out = Path(out)
     try:
         leftovers = [d for d in out.iterdir() if d.name.startswith(".meshcut_") and d.is_dir()]
+        leftovers = [d for d in leftovers if time.time() - d.stat().st_mtime >= min_age]
     except OSError:
         return
     entries = [d for d in leftovers if (d / JOURNAL).is_file()]
@@ -1815,6 +1891,7 @@ def publish_files(staging, names, out):
         for n in names:
             installed.append(n)
             os.replace(Path(staging) / n, out / n)
+        fsync_dir(out)
         _write_journal(aside, "done", names, moved)
     except BaseException:
         stuck = []
@@ -1868,6 +1945,8 @@ def prepare_outdir(out, new_names, inputs):
 
 def write_split(res, outdir, fmt, inputs=()):
     """Teile + meshcut.json transaktional schreiben. Rueckgabe: Begleitdaten (dict)."""
+    if fmt not in FORMATS:
+        fail("Format '%s' gibt es nicht - moeglich: %s." % (str(fmt)[:20], ", ".join(FORMATS)))
     ids = [p.id for p in res.parts]
     if res.names and not (set(res.names) <= set(ids) and all(NAME_RE.fullmatch(str(v)) for v in res.names.values())):
         fail("Teilnamen: nur Buchstaben, Ziffern, Leerzeichen, - . _ (hoechstens 64 Zeichen) und nur fuer vorhandene Teile.")
@@ -1885,11 +1964,11 @@ def write_split(res, outdir, fmt, inputs=()):
     try:
         if fmt in MULTI_NAME:
             objs = [((res.names or {}).get(p.id) or "part_%d" % p.id, p.V, p.F) for p in res.parts]
-            (staging / names[0]).write_bytes(threemf_bytes(objs) if fmt == "3mf" else glb_bytes(objs))
+            write_durable(staging / names[0], threemf_bytes(objs) if fmt == "3mf" else glb_bytes(objs))
         else:
             for p, (fn, _) in zip(res.parts, files):
-                (staging / fn).write_bytes(mesh_bytes(fmt, p.V, p.F, "part_%d" % p.id))
-        (staging / SIDECAR).write_text(json.dumps(side, indent=1), encoding="utf-8")
+                write_durable(staging / fn, mesh_bytes(fmt, p.V, p.F, "part_%d" % p.id))
+        write_durable(staging / SIDECAR, json.dumps(side, indent=1).encode("utf-8"))
         allnames = names + [SIDECAR]
         # was eine fruehere Ausgabe hinterlassen hat und jetzt nicht mehr dazugehoert, wird mit zur Seite gelegt
         stale = sorted(n for n in owned if n not in allnames and (out / n).is_file())
@@ -1915,8 +1994,9 @@ def save_atomic(data, path):
         fail("Der Ordner fuer %s existiert nicht." % path)
     d = Path(tempfile.mkdtemp(prefix=".meshcut_", dir=path.resolve().parent))
     try:
-        (d / path.name).write_bytes(data)
+        write_durable(d / path.name, data)
         os.replace(d / path.name, path.resolve())
+        fsync_dir(path.resolve().parent)
     finally:
         rmtree_force(d)
 

@@ -251,6 +251,9 @@ def test_hard_kill_during_replace_restores_a_consistent_set(tmp_path, n):
     env = dict(os.environ, PYTHONPATH=str(ROOT))
     r = subprocess.run([sys.executable, str(driver), str(src), str(out), str(n)], env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL)
     assert r.returncode in (0, 77), r.stderr
+    for d in out.iterdir():                      # der Absturz liegt laenger zurueck: erst dann raeumen auch lesende Befehle auf
+        if d.name.startswith(".meshcut_"):
+            os.utime(d, (1, 1))
     v = mc.verify(out, source=src)               # stellt bei Bedarf zurueck; danach muss der Satz vollstaendig und in Ordnung sein
     assert v["ok"], (n, r.returncode, v["checks"])
     assert not [d for d in out.iterdir() if d.name.startswith(".meshcut_")] or r.returncode == 77

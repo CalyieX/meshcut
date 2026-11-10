@@ -7,6 +7,7 @@ import struct
 import subprocess
 import sys
 import tracemalloc
+import zipfile
 import zlib
 from pathlib import Path
 
@@ -369,3 +370,177 @@ def test_sequence_hash_is_order_dependent_and_triangle_hash_is_not():
     perm = np.arange(len(mesh.F))[::-1]
     assert mc.triangle_hash(mesh.V, mesh.F) == mc.triangle_hash(mesh.V, mesh.F[perm])
     assert mc.sequence_hash(mesh.V, mesh.F) != mc.sequence_hash(mesh.V, mesh.F[perm])
+
+
+# ----------------------------------------------------------------------------- flaechenlose Dreiecke (T-Verbindung): Rundlauf bleibt bitgenau
+def _sliver_mesh():
+    m = shapes.cube(2.0)
+    V, F = m.V.tolist(), m.F.tolist()
+    vid = lambda p: next(i for i, v in enumerate(V) if np.allclose(v, p))
+    a, c = vid([0, 0, 0]), vid([2, 0, 0])
+    V.append([1, 0, 0])
+    mi = len(V) - 1
+    new = []
+    for f in F:
+        cyc = [(f[0], f[1]), (f[1], f[2]), (f[2], f[0])]
+        if (a, c) in cyc:
+            k = cyc.index((a, c))
+            r = f[k:] + f[:k]
+            new += [[a, mi, r[2]], [mi, c, r[2]]]
+        else:
+            new.append(f)
+    new.append([a, c, mi])                                       # flaechenloses Fuellstueck auf der Kante a-c
+    return mc.Mesh(np.array(V), np.array(new))
+
+
+@pytest.mark.parametrize("plane", ["x=1", "x=0.5", "x=1.5", "1,1,0,1", "y=1", "z=0.7"])
+def test_flat_triangles_round_trip_exactly(tmp_path, plane):
+    src = write_obj(tmp_path / "s.obj", _sliver_mesh())
+    mc.split(src, tmp_path / "o", plane=[plane], verify=True)
+    r = mc.verify(tmp_path / "o", src)
+    assert r["ok"], r["checks"]
+    assert r["joined_hash"] == r["source_hash"]
+    mc.join(tmp_path / "o", tmp_path / "back.obj")                # auch der Weg ueber die Kommandozeilen-Funktion
+
+
+# ----------------------------------------------------------------------------- lesende Befehle stoeren keinen laufenden Schreiber
+def test_reading_commands_leave_young_staging_folders_alone(tmp_path):
+    src, out = split_to(tmp_path)
+    young = out / ".meshcut_laeuft"
+    young.mkdir()
+    (young / "x").write_text("gehoert einem laufenden split")
+    assert mc.verify(out, src)["ok"]
+    mc.join(out, tmp_path / "back.obj")
+    mc.info(out / "part_0.obj") if (out / "part_0.obj").exists() else None
+    assert (young / "x").exists()                                # frisch: unangetastet
+    os.utime(young, (1, 1))
+    assert mc.verify(out, src)["ok"]
+    assert not young.exists()                                    # alt: aufgeraeumt
+
+
+# ----------------------------------------------------------------------------- Dateien, die sich beim Aufloesen vervielfachen
+def _glb(js, binary=b""):
+    jb = json.dumps(js).encode()
+    jb += b" " * ((-len(jb)) % 4)
+    return (b"glTF" + struct.pack("<II", 2, 12 + 8 + len(jb) + 8 + len(binary)) + struct.pack("<II", len(jb), 0x4E4F534A) + jb
+            + struct.pack("<II", len(binary), 0x004E4942) + binary)
+
+
+def _fan_glb(depth):
+    nodes = [{"mesh": 0, "children": [i + 1, i + 1]} for i in range(depth)] + [{"mesh": 0}]      # jede Ebene verdoppelt die Besuche
+    js = {"asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [0]}], "nodes": nodes,
+          "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "mode": 4}]}],
+          "accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"}],
+          "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 36}], "buffers": [{"byteLength": 36}]}
+    return _glb(js, np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], "<f4").tobytes())
+
+
+def test_glb_instance_explosion_is_stopped():
+    assert len(mc.read_glb(_fan_glb(3))) == 15                   # kleine Faecher bleiben erlaubt
+    with pytest.raises(mc.MeshcutError, match="vervielfacht"):
+        mc.read_glb(_fan_glb(20))
+
+
+def test_glb_triangle_budget_is_enforced(monkeypatch):
+    monkeypatch.setattr(mc, "MAX_READ_TRIANGLES", 10)
+    with pytest.raises(mc.MeshcutError, match="Dreiecke nach dem Aufloesen"):
+        mc.read_glb(_fan_glb(4))
+
+
+def _3mf(xml):
+    import io
+    b = io.BytesIO()
+    with zipfile.ZipFile(b, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("3D/3dmodel.model", xml)
+    return b.getvalue()
+
+
+def _component_tower(n, levels):
+    objs = ['<object id="1"><mesh><vertices><vertex x="0" y="0" z="0"/><vertex x="1" y="0" z="0"/><vertex x="0" y="1" z="0"/></vertices>'
+            '<triangles><triangle v1="0" v2="1" v3="2"/></triangles></mesh></object>']
+    for k in range(2, levels + 2):
+        objs.append('<object id="%d"><components>%s</components></object>' % (k, "".join('<component objectid="%d"/>' % (k - 1) for _ in range(n))))
+    return ('<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><resources>%s</resources>'
+            '<build><item objectid="%d"/></build></model>' % ("".join(objs), levels + 1))
+
+
+def test_3mf_component_explosion_is_stopped():
+    assert len(mc.read_3mf(_3mf(_component_tower(2, 3)))[0][1]) == 8
+    with pytest.raises(mc.MeshcutError, match="vervielfacht"):
+        mc.read_3mf(_3mf(_component_tower(100, 7)))
+
+
+def test_3mf_triangle_budget_is_enforced(monkeypatch):
+    monkeypatch.setattr(mc, "MAX_READ_TRIANGLES", 5)
+    with pytest.raises(mc.MeshcutError, match="Dreiecke nach dem Aufloesen"):
+        mc.read_3mf(_3mf(_component_tower(2, 3)))
+
+
+def test_3mf_zip_bomb_is_not_unpacked(monkeypatch):
+    monkeypatch.setattr(mc, "MAX_XML_BYTES", 2000)
+    with pytest.raises(mc.MeshcutError, match="entpackt"):
+        mc.read_3mf(_3mf("<model>" + " " * 100000 + "</model>"))
+
+
+def test_huge_polygons_are_refused(monkeypatch):
+    monkeypatch.setattr(mc, "MAX_POLYGON", 10)
+    ring = "\n".join("v %f %f 0" % (np.cos(a), np.sin(a)) for a in np.linspace(0, 2 * np.pi, 12, endpoint=False))
+    with pytest.raises(mc.MeshcutError, match="Ecken"):
+        mc.read_meshes_bytes("obj", (ring + "\nf " + " ".join(str(i + 1) for i in range(12)) + "\n").encode(), "x")
+    ok = (ring + "\nf " + " ".join(str(i + 1) for i in range(10)) + "\n").encode()
+    assert len(mc.read_meshes_bytes("obj", ok, "x")[0].F) == 8
+
+
+# ----------------------------------------------------------------------------- Dauerhaftigkeit: erst fsync, dann umbenennen
+def test_files_are_synced_before_they_are_renamed(tmp_path, monkeypatch):
+    order = []
+    real_fsync, real_replace = os.fsync, os.replace
+    monkeypatch.setattr(os, "fsync", lambda fd: (order.append("fsync"), real_fsync(fd))[1])
+    monkeypatch.setattr(os, "replace", lambda a, b: (order.append("replace"), real_replace(a, b))[1])
+    src, out = split_to(tmp_path)
+    assert order.count("fsync") >= 7 and "replace" in order        # vier Teile + Begleitdatei + zwei Journal-Staende
+    assert order.index("fsync") < order.index("replace")          # Teile und Begleitdatei sind auf der Platte, bevor sie ihren Namen bekommen
+    order.clear()
+    mc.join(out, tmp_path / "b.obj")
+    assert order[:2] == ["fsync", "replace"]                       # auch die zusammengesetzte Datei
+
+
+# ----------------------------------------------------------------------------- beschaedigte Begleitdatei: immer eine saubere Meldung, nie ein roher Fehler
+def _paths(o, pre=()):
+    if isinstance(o, dict):
+        for k, v in o.items():
+            yield pre + (k,)
+            yield from _paths(v, pre + (k,))
+    elif isinstance(o, list):
+        for i, v in enumerate(o[:2]):
+            yield pre + (i,)
+            yield from _paths(v, pre + (i,))
+
+
+@pytest.mark.parametrize("fmt", ["obj", "3mf"])
+def test_damaged_sidecar_gives_clean_errors_only(tmp_path, fmt):
+    import copy
+    src = write_obj(tmp_path / "s.obj", shapes.cube(2.0, sub=2))
+    mc.split(src, tmp_path / "o", plane=["x=1"], format=fmt)
+    side_path = tmp_path / "o" / "meshcut.json"
+    base = json.loads(side_path.read_text())
+    raw = []
+    for p in _paths(base):
+        for mode in ("del", "none", "str", "neg"):
+            s = copy.deepcopy(base)
+            par = s
+            for k in p[:-1]:
+                par = par[k]
+            if mode == "del" and isinstance(par, dict):
+                del par[p[-1]]
+            else:
+                par[p[-1]] = {"del": None, "none": None, "str": "x", "neg": -1}[mode]
+            side_path.write_text(json.dumps(s))
+            for call in (lambda: mc.verify(tmp_path / "o"), lambda: mc.join(tmp_path / "o", tmp_path / "j.obj")):
+                try:
+                    call()
+                except mc.MeshcutError:
+                    pass
+                except Exception as e:                           # roher Fehler = Luecke
+                    raw.append((p, mode, type(e).__name__))
+    assert not raw, raw[:5]

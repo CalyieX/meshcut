@@ -58,6 +58,9 @@ def _opt(args, key, kind):
     elif kind == "str":
         if not isinstance(v, str):
             raise MeshcutError("%s: Text noetig." % key)
+    elif kind == "format":
+        if v not in mc.FORMATS:
+            raise MeshcutError("format: moeglich sind %s." % ", ".join(mc.FORMATS))
     elif kind == "strlist":
         if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
             raise MeshcutError("%s: Liste von Texten noetig." % key)
@@ -82,7 +85,7 @@ class Tools:
         src, out = self.sb.path(a.get("input"), "input"), self.sb.path(a.get("outdir"), "outdir")
         opts = {}
         for key, kind in (("plane", "strlist"), ("grid", "str"), ("max", "str"), ("wedges", "int"), ("axis", "str"), ("center", "str"),
-                          ("labels", "str"), ("format", "str"), ("no_cap", "bool"), ("flip", "bool"), ("verify", "bool")):
+                          ("labels", "str"), ("format", "format"), ("no_cap", "bool"), ("flip", "bool"), ("verify", "bool")):
             v = _opt(a, key, kind)
             if v is not None:
                 opts[key] = self.sb.path(v, "labels") if key == "labels" else v
@@ -93,7 +96,7 @@ class Tools:
         src, out = self.sb.path(a.get("input"), "input"), self.sb.path(a.get("outdir"), "outdir")
         return _summary(ai.segment_file(src, out, backend=_opt(a, "backend", "str") or "kmeans", parts=_opt(a, "parts", "int"),
                                         names=_opt(a, "names", "strlist"), prompt=_opt(a, "prompt", "str"),
-                                        fmt=_opt(a, "format", "str") or "stl"))
+                                        fmt=_opt(a, "format", "format") or "stl"))
 
     def join(self, a):
         parts = a.get("parts")
@@ -103,7 +106,7 @@ class Tools:
 
     def verify(self, a):
         src = a.get("source")
-        r = mc.verify(self.sb.path(a.get("parts"), "parts"), source=self.sb.path(src, "source") if src else None)
+        r = mc.verify(self.sb.path(a.get("parts"), "parts"), source=None if src is None else self.sb.path(src, "source"))
         return {"ok": r["ok"], "checks": [{"name": n, "ok": ok, "text": t} for n, ok, t in r["checks"]],
                 "source_hash": r["source_hash"], "joined_hash": r["joined_hash"]}
 
