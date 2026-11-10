@@ -103,12 +103,66 @@ MUTANTS = [
     ("PLY big endian", 'order = "<" if fmt == "binary_little_endian" else ">"', 'order = "<"'),
     ("PLY Format unbekannt", 'if fmt not in ("ascii", "binary_little_endian", "binary_big_endian"):', "if False:"),
     ("Zwischenordner bleiben liegen", "        if d not in entries:", "        if False:"),
+    ("serve: Sandbox ohne Pruefung", "p.relative_to(self.root)", "pass", "kkmeshcut_serve.py"),
+    ("serve: Schluessel nicht geprueft", 'return got.startswith("Bearer ") and hmac.compare_digest(got[7:].encode(), token.encode())', "return True", "kkmeshcut_serve.py"),
+    ("serve: Host nicht geprueft", 'return host in ("127.0.0.1", "localhost", "::1")', "return True", "kkmeshcut_serve.py"),
+    ("serve: Content-Type nicht geprueft", '.strip().lower() != "application/json":', '.strip().lower() != "application/json" and False:', "kkmeshcut_serve.py"),
+    ("serve: Body-Grenze fehlt", "if n < 0 or n > MAX_BODY:", "if False:", "kkmeshcut_serve.py"),
+    ("serve: Timeout fehlt", "H.timeout = timeout", "pass", "kkmeshcut_serve.py"),
+    ("serve: fremde Adresse ohne Schluessel", 'if host not in ("127.0.0.1", "localhost", "::1") and not token:', "if False:", "kkmeshcut_serve.py"),
+    ("ai: Weiterleitung erlaubt", 'raise urllib.error.HTTPError(req.full_url, code, "Weiterleitungen sind nicht erlaubt", headers, fp)', "return super().redirect_request(req, fp, code, msg, headers, newurl)", "kkmeshcut_ai.py"),
+    ("ai: http fuer fremde Hosts", 'if u.scheme != "https" and not (u.scheme == "http" and local):', "if False:", "kkmeshcut_ai.py"),
+    ("ai: Kommazahlen in Karte", "if not np.isfinite(lab).all() or (lab != np.floor(lab)).any():", "if False:", "kkmeshcut_ai.py"),
+    ("ai: doppelte Namen", "if len(set(low)) != len(low):", "if False:", "kkmeshcut_ai.py"),
+    ("ai: Zuordnung nicht vollstaendig geprueft", "if sorted(out) != ids or sorted(out.values()) != sorted(names):", "if False:", "kkmeshcut_ai.py"),
+    ("ai: Teil 0 nicht oben", "key.append((-round(float(c[2]), 9),", "key.append((round(float(c[2]), 9),", "kkmeshcut_ai.py"),
+    ("ai: stderr durchgereicht", 'fail("Der Segmentierungsbefehl endete mit Code %d - zum Nachsehen den Befehl von Hand ausfuehren." % r.returncode)', 'fail("Code %d: %s" % (r.returncode, r.stderr.strip()))', "kkmeshcut_ai.py"),
+    ("ai: Antwort zu gross erlaubt", "if len(body) > MAX_RESPONSE_BYTES:", "if False:", "kkmeshcut_ai.py"),
+    ("journal: Eintraege nicht geprueft", "or not all(0 <= i < len(names) and v == names[i] for i, v in moved.items())):", "):"),
+    ("journal: Namen nicht geprueft", "or not all(isinstance(n, str) and (PART_NAME.fullmatch(n) or n in MULTI_NAME.values() or n == SIDECAR) for n in names)", ""),
+    ("ai: Kindprogramm erbt stdin", "shell=False, stdin=subprocess.DEVNULL)", "shell=False)", "kkmeshcut_ai.py"),
+    ('r2 serve: Schluessel nur Praefix', 'hmac.compare_digest(got[7:].encode(), token.encode())', 'got[7:].startswith(token[:3])', "kkmeshcut_serve.py"),
+    ('r2 serve: Schluessel nur Laenge', 'hmac.compare_digest(got[7:].encode(), token.encode())', 'len(got[7:]) == len(token)', "kkmeshcut_serve.py"),
+    ('r2 serve: GET ohne Schluessel', 'def do_GET(self):\n            if not self._authorized():', 'def do_GET(self):\n            if False:', "kkmeshcut_serve.py"),
+    ('r2 serve: Typ bool nicht geprueft', 'if not isinstance(v, bool):', 'if False:', "kkmeshcut_serve.py"),
+    ('r2 serve: Protokollversion immer neueste', 'want if want in MCP_VERSIONS else MCP_VERSIONS[0]', 'MCP_VERSIONS[0]', "kkmeshcut_serve.py"),
+    ('r2 serve: Werkzeugfehler beendet Dienst', '        except Exception as e:                                   # nie den Dienst beenden', '        except KeyboardInterrupt as e:', "kkmeshcut_serve.py"),
+    ('r2 serve: LOCK weg', '    with LOCK:\n        return getattr(tools, name)(args)', '    return getattr(tools, name)(args)', "kkmeshcut_serve.py"),
+    ('r2 serve: Nullbyte erlaubt', 'or "\\0" in value:', ':', "kkmeshcut_serve.py"),
+    ('r2 serve: chunked erlaubt', 'if self.headers.get("Transfer-Encoding"):', 'if False:', "kkmeshcut_serve.py"),
+    ('r2 serve: verschachteltes JSON beendet Anfrage', '            except Exception:                                    # ValueError, UnicodeDecodeError, RecursionError', '            except (ValueError, UnicodeDecodeError):', "kkmeshcut_serve.py"),
+    ('r2 serve: MCP-Zeile ohne Schutz', '            except Exception as e:                               # eine kaputte Nachricht beendet nie den Dienst', '            except KeyboardInterrupt as e:', "kkmeshcut_serve.py"),
+    ('r2 serve: MCP nicht UTF-8', 'stream.reconfigure(encoding="utf-8", errors="replace"', 'stream.reconfigure(errors="replace"', "kkmeshcut_serve.py"),
+    ('r2 ai: http fuer fremde Hosts (Name)', 'local = (u.hostname or "") in ("localhost", "127.0.0.1", "::1")', 'local = True', "kkmeshcut_ai.py"),
+    ('r2 ai: Adresse ohne Host', '    if not u.hostname:\n        fail("%s hat keine Adresse." % what)', '    pass', "kkmeshcut_ai.py"),
+    ('r2 ai: Teilezahl weicht ab', 'if parts and found != parts:', 'if False:', "kkmeshcut_ai.py"),
+    ('r2 ai: nur ein Teil erlaubt', 'if found < 2:', 'if False:', "kkmeshcut_ai.py"),
+    ('r2 ai: Antwortgroesse', 'if len(body) > MAX_RESPONSE_BYTES:', 'if False:', "kkmeshcut_ai.py"),
+    ('r2 ai: Karte Kommazahlen', '        if not np.isfinite(lab).all() or (lab != np.floor(lab)).any():', '        if False:', "kkmeshcut_ai.py"),
+    ('r2 ai: Karte negativ', 'if len(lab) and lab.min() < 0:', 'if False:', "kkmeshcut_ai.py"),
+    ('r2 ai: Karte Laenge', 'if lab.shape != (nfaces,):', 'if False:', "kkmeshcut_ai.py"),
+    ('r2 ai: kmeans Startpunkt', 'centers = [X[int(np.argmin(((X - mean) ** 2).sum(axis=1)))]]', 'centers = [X[int(np.argmax(((X - mean) ** 2).sum(axis=1)))]]', "kkmeshcut_ai.py"),
+    ('r2 ai: Flaechenanteil', 'round(float(area[m].sum() / total), 3)', '0', "kkmeshcut_ai.py"),
+    ('r2 ai: Befehl mit Shell', 'shell=False, stdin=subprocess.DEVNULL)', 'shell=True, stdin=subprocess.DEVNULL)', "kkmeshcut_ai.py"),
+    ('r2 ai: Befehl ohne Zeitgrenze', 'capture_output=True, text=True, timeout=timeout,', 'capture_output=True, text=True,', "kkmeshcut_ai.py"),
+    ('r2 ai: LLM-Schluessel nach fremder Adresse', 'if os.environ.get("MESHCUT_LLM_URL", "").strip():           # ausdruecklich', 'if False:           # ausdruecklich', "kkmeshcut_ai.py"),
+    ('r2 ai: components Teilezahl', 'if parts and parts != k:', 'if False:', "kkmeshcut_ai.py"),
+    ('r2 kern: PLY Listentyp', 'if t[2] not in PLY_TYPES or t[3] not in PLY_TYPES:', 'if False:'),
+    ('r2 kern: PLY negative Anzahl', 'if any(c < 0 for _, c, _ in elements):', 'if False:'),
+    ('r2 kern: PLY binaer abgeschnitten', 'if pos + need > len(data):', 'if False:'),
+    ('r2 kern: PLY Schnellweg ohne Pruefung', 'if (arr["n"] == n0).all():', 'if True:'),
+    ('r2 kern: PLY Index bei kurzen Flaechen ungeprueft', 'if ids and (min(ids) < 0 or max(ids) >= len(V)):', 'if len(ids) >= 3 and (min(ids) < 0 or max(ids) >= len(V)):'),
+    ('r2 kern: Karte mit Pickle', 'np.load(p, allow_pickle=False)', 'np.load(p, allow_pickle=True)'),
+    ('r2 kern: Dreiecksreihenfolge nicht hergestellt', '    P, S = P[order], S[order]\n    nfaces', '    S = S[order]\n    nfaces'),
+    ('r2 kern: Reihenfolge-Hash nicht geprueft (verify)', 'add("reihenfolge", oh == side["source"]["order_hash"],', 'add("reihenfolge", True,'),
+    ('r2 kern: Reihenfolge-Hash nicht geprueft (join)', 'if sequence_hash(mesh.V, mesh.F, prec) != side["source"]["order_hash"]:', 'if False:'),
 ]
 
 
 def run(mutant):
-    name, old, new = mutant
-    src = (REPO / "kkmeshcut.py").read_text(encoding="utf-8")
+    name, old, new = mutant[:3]
+    target = mutant[3] if len(mutant) > 3 else "kkmeshcut.py"                  # ohne Angabe: der Kern
+    src = (REPO / target).read_text(encoding="utf-8")
     if old not in src:
         return name, "MUSTER FEHLT", ""
     work = Path(tempfile.mkdtemp(prefix="mut_"))
@@ -117,16 +171,22 @@ def run(mutant):
         shutil.copytree(REPO / "examples", work / "examples")
         (work / "docs").mkdir()
         mutated = src.replace(old, new, 1)
-        for extra in ("kkmeshcut_ai.py", "kkmeshcut_serve.py"):
+        for extra in ("kkmeshcut.py", "kkmeshcut_ai.py", "kkmeshcut_serve.py"):
             shutil.copy(REPO / extra, work / extra)
-        (work / "kkmeshcut.py").write_text(mutated, encoding="utf-8")
-        (work / "docs" / "kkmeshcut.py").write_text(mutated, encoding="utf-8")
+        (work / target).write_text(mutated, encoding="utf-8")
+        shutil.copy(work / "kkmeshcut.py", work / "docs" / "kkmeshcut.py")
         (work / "docs" / "index.html").write_text((REPO / "docs" / "index.html").read_text(encoding="utf-8"), encoding="utf-8")
-        r = subprocess.run([PY, "-m", "pytest", "-x", "-q", "-p", "no:cacheprovider", "tests"], cwd=work, capture_output=True, text=True, timeout=1500, creationflags=NO_WINDOW)
-        tail = [ln for ln in r.stdout.splitlines() if ln.startswith("FAILED") or ln.startswith("ERROR")][:1]
-        return name, ("GETOETET" if r.returncode != 0 else "UEBERLEBT"), (tail[0][:110] if tail else "")
+        r = subprocess.run([PY, "-m", "pytest", "-x", "-q", "-p", "no:cacheprovider", "--tb=line", "tests"], cwd=work, capture_output=True, text=True, timeout=1500, creationflags=NO_WINDOW, stdin=subprocess.DEVNULL)
+        lines = r.stdout.splitlines()
+        tail = [ln for ln in lines if ln.startswith("FAILED") or ln.startswith("ERROR")][:1]
+        why = [ln for ln in lines if ln.startswith(("/", "E:", "C:", "D:")) and ": " in ln][:1]            # Zeile aus --tb=line
+        if why:
+            tail = [(tail[0] if tail else "") + " | " + why[0][-160:]]
+        # nur Code 1 heisst: ein Test ist gescheitert. Code 2 und hoeher (Syntaxfehler, Import, keine Tests) ist ein ungueltiger Mutant.
+        state = {0: "UEBERLEBT", 1: "GETOETET"}.get(r.returncode, "UNGUELTIG (pytest Code %d)" % r.returncode)
+        return name, state, (tail[0][:330] if tail else "")
     except subprocess.TimeoutExpired:
-        return name, "ZEITUEBERSCHREITUNG (zaehlt als getoetet)", ""
+        return name, "ZEITUEBERSCHREITUNG", ""
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
@@ -139,7 +199,7 @@ if __name__ == "__main__":
         for name, state, info in ex.map(run, todo):
             print("%-40s %-12s %s" % (name, state, info), flush=True)
             results.append(state)
-    alive = [t for t, s in zip(todo, results) if s in ("UEBERLEBT", "MUSTER FEHLT")]
+    alive = [t for t, s in zip(todo, results) if s not in ("GETOETET",)]
     print("\n%d Mutanten, %d getoetet, %d ueberlebt/ungueltig" % (len(todo), len(todo) - len(alive), len(alive)))
     for t in alive:
         print("  ->", t[0])

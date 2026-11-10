@@ -249,7 +249,7 @@ def test_hard_kill_during_replace_restores_a_consistent_set(tmp_path, n):
     driver = tmp_path / "crash.py"
     driver.write_text(CRASH)
     env = dict(os.environ, PYTHONPATH=str(ROOT))
-    r = subprocess.run([sys.executable, str(driver), str(src), str(out), str(n)], env=env, capture_output=True, text=True)
+    r = subprocess.run([sys.executable, str(driver), str(src), str(out), str(n)], env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL)
     assert r.returncode in (0, 77), r.stderr
     v = mc.verify(out, source=src)               # stellt bei Bedarf zurueck; danach muss der Satz vollstaendig und in Ordnung sein
     assert v["ok"], (n, r.returncode, v["checks"])

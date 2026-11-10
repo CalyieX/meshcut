@@ -9,7 +9,7 @@ Schluessel und Adressen kommen nur aus Umgebungsvariablen, nie aus Dateien oder 
     MESHCUT_SEGMENTER_CMD   Befehl eines lokalen Modells (Platzhalter {input} {output} {parts}), z. B. PartField/SAMesh-Skript
     MESHCUT_SEGMENT_URL     gehosteter Dienst (https; http nur fuer localhost), MESHCUT_SEGMENT_KEY = Bearer-Schluessel
     MESHCUT_LLM_URL         OpenAI-kompatibler Chat-Endpunkt, MESHCUT_LLM_KEY, MESHCUT_LLM_MODEL
-    ANTHROPIC_API_KEY       Anthropic Messages API (MESHCUT_LLM_MODEL waehlt das Modell)
+    ANTHROPIC_API_KEY       Anthropic Messages API (MESHCUT_LLM_MODEL waehlt das Modell, MESHCUT_ANTHROPIC_URL die Adresse)
 """
 import json
 import os
@@ -93,6 +93,18 @@ class ComponentsSegmenter(Segmenter):
         return order_by_height(mesh, lab)
 
 
+def start_centers(X, w, k):
+    """Startpunkte fuer k-Means: weitester-Punkt-Verfahren, beginnend am Punkt, der dem gewichteten Gesamtschwerpunkt am naechsten liegt."""
+    mean = (X * w[:, None]).sum(axis=0)
+    centers = [X[int(np.argmin(((X - mean) ** 2).sum(axis=1)))]]
+    dist = ((X - centers[0]) ** 2).sum(axis=1)
+    for _ in range(k - 1):
+        nxt = int(np.argmax(dist))
+        centers.append(X[nxt])
+        dist = np.minimum(dist, ((X - X[nxt]) ** 2).sum(axis=1))
+    return np.array(centers)
+
+
 class KMeansSegmenter(Segmenter):
     """Raeumliche Gruppen: k-Means auf den Dreiecksschwerpunkten (feste Startpunkte, ohne Zufall - gleiche Eingabe, gleiche Karte).
     Einfach, ohne Modell und ohne Netz; fuer Formen mit klaren raeumlichen Teilen (Figur: Kopf/Rumpf/Beine) ein brauchbarer Anfang."""
@@ -107,16 +119,7 @@ class KMeansSegmenter(Segmenter):
         w = area / area.sum() if area.sum() > 0 else np.full(len(X), 1.0 / len(X))
         if len(np.unique(X, axis=0)) < k:
             fail("kmeans: zu wenige verschiedene Dreiecke fuer %d Teile." % k)
-        # Startpunkte: weitester-Punkt-Verfahren, beginnend am Punkt, der dem Gesamtschwerpunkt am naechsten liegt
-        mean = (X * w[:, None]).sum(axis=0)
-        first = int(np.argmin(((X - mean) ** 2).sum(axis=1)))
-        centers = [X[first]]
-        dist = ((X - centers[0]) ** 2).sum(axis=1)
-        for _ in range(k - 1):
-            nxt = int(np.argmax(dist))
-            centers.append(X[nxt])
-            dist = np.minimum(dist, ((X - X[nxt]) ** 2).sum(axis=1))
-        C = np.array(centers)
+        C = start_centers(X, w, k)
         lab = np.zeros(len(X), np.int64)
         for _ in range(100):
             d = ((X[:, None, :] - C[None, :, :]) ** 2).sum(axis=2)
@@ -143,7 +146,7 @@ def split_command(tpl):
 
 
 def _no_window_run(cmd, timeout):
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, creationflags=NO_WINDOW, shell=False)
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, creationflags=NO_WINDOW, shell=False, stdin=subprocess.DEVNULL)   # stdin: ohne Konsole (versteckter Server) ist das geerbte Handle ungueltig
 
 
 class CommandSegmenter(Segmenter):
@@ -171,10 +174,11 @@ class CommandSegmenter(Segmenter):
             except (OSError, subprocess.TimeoutExpired) as e:
                 fail("Der Segmentierungsbefehl liess sich nicht ausfuehren (%s)." % (str(e).splitlines() or ["?"])[0])
             if r.returncode != 0:
-                fail("Der Segmentierungsbefehl endete mit Code %d: %s" % (r.returncode, (r.stderr.strip().splitlines() or ["ohne Meldung"])[-1][:200]))
+                # die Ausgabe fremder Programme wird nicht weitergereicht (koennte Schluessel oder Pfade enthalten)
+                fail("Der Segmentierungsbefehl endete mit Code %d - zum Nachsehen den Befehl von Hand ausfuehren." % r.returncode)
             if not outp.is_file():
                 fail("Der Segmentierungsbefehl hat %s nicht geschrieben." % outp.name)
-            return order_by_height(mesh, np.asarray(mc.read_label_file(outp)).astype(np.int64))
+            return order_by_height(mesh, validate_labels(mc.read_label_file(outp), len(mesh.F)))
 
 
 class HttpSegmenter(Segmenter):
@@ -239,10 +243,17 @@ def check_url(url, what):
         fail("%s hat keine Adresse." % what)
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Weiterleitungen werden nicht gefolgt: sonst ginge der Schluessel (Authorization) an eine Adresse, die niemand geprueft hat."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, "Weiterleitungen sind nicht erlaubt", headers, fp)
+
+
 def http_post(url, data, headers, timeout):
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with urllib.request.build_opener(_NoRedirect).open(req, timeout=timeout) as r:
             body = r.read(MAX_RESPONSE_BYTES + 1)
     except urllib.error.HTTPError as e:
         fail("Der Dienst antwortet mit Fehler %d." % e.code)
@@ -290,8 +301,8 @@ class AnthropicLlm(Llm):
         key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
         if not key:
             fail("Sprachmodell: ANTHROPIC_API_KEY ist nicht gesetzt.")
-        url = os.environ.get("MESHCUT_LLM_URL", "").strip() or "https://api.anthropic.com/v1/messages"
-        check_url(url, "MESHCUT_LLM_URL")
+        url = os.environ.get("MESHCUT_ANTHROPIC_URL", "").strip() or "https://api.anthropic.com/v1/messages"
+        check_url(url, "MESHCUT_ANTHROPIC_URL")
         model = os.environ.get("MESHCUT_LLM_MODEL", "").strip() or "claude-sonnet-5-5"
         headers = {"Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01"}
         payload = {"model": model, "max_tokens": 1024, "system": system, "messages": [{"role": "user", "content": user}]}
@@ -306,7 +317,7 @@ LLMS = {c.name: c for c in (AnthropicLlm, OpenAICompatLlm)}
 
 
 def default_llm():
-    if os.environ.get("MESHCUT_LLM_URL", "").strip() and not os.environ.get("ANTHROPIC_API_KEY", "").strip():
+    if os.environ.get("MESHCUT_LLM_URL", "").strip():           # ausdruecklich gesetzter Endpunkt gewinnt; der Anthropic-Schluessel geht nie dorthin
         return OpenAICompatLlm()
     if os.environ.get("ANTHROPIC_API_KEY", "").strip():
         return AnthropicLlm()
@@ -389,7 +400,7 @@ def assign_names(mesh, labels, names, llm=None):
             pid = int(k)
         except (TypeError, ValueError):
             fail("Das Sprachmodell hat eine unbekannte Teilnummer '%s' geliefert." % k)
-        if pid not in ids or not isinstance(v, str) or v not in names or pid in out:
+        if pid not in ids or not isinstance(v, str) or pid in out:
             fail("Das Sprachmodell hat eine unbrauchbare Zuordnung geliefert.")
         out[pid] = v
     if sorted(out) != ids or sorted(out.values()) != sorted(names):

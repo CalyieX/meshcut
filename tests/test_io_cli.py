@@ -269,7 +269,7 @@ def test_labels_command_and_grid_labels(tmp_path):
 
 def run_cli(*args, cwd=None):
     env = dict(os.environ, PYTHONIOENCODING="utf-8")
-    return subprocess.run([sys.executable, str(ROOT / "kkmeshcut.py"), *args], capture_output=True, text=True, cwd=cwd, env=env, encoding="utf-8")
+    return subprocess.run([sys.executable, str(ROOT / "kkmeshcut.py"), *args], capture_output=True, text=True, stdin=subprocess.DEVNULL, cwd=cwd, env=env, encoding="utf-8")
 
 
 def test_command_line_end_to_end(tmp_path):

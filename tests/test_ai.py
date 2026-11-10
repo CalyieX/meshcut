@@ -3,6 +3,7 @@ import http.client
 import http.server
 import json
 import os
+import struct
 import subprocess
 import sys
 import threading
@@ -285,10 +286,28 @@ def test_prompt_with_anthropic_messages_api(tmp_path, monkeypatch, fake_server):
         return 200, {"content": [{"type": "text", "text": '["Oben", "Unten"]'}]}
     Fake.reply = reply
     monkeypatch.setenv("ANTHROPIC_API_KEY", "ak")
-    monkeypatch.setenv("MESHCUT_LLM_URL", fake_server + "/v1/messages")
+    monkeypatch.setenv("MESHCUT_ANTHROPIC_URL", fake_server + "/v1/messages")
+    monkeypatch.delenv("MESHCUT_LLM_URL", raising=False)
     monkeypatch.delenv("MESHCUT_LLM_MODEL", raising=False)
-    names = ai.names_from_prompt("trenne oben und unten", ai.default_llm())
-    assert names == ["Oben", "Unten"]
+    llm = ai.default_llm()
+    assert isinstance(llm, ai.AnthropicLlm)
+    assert ai.names_from_prompt("trenne oben und unten", llm) == ["Oben", "Unten"]
+
+
+def test_anthropic_key_never_goes_to_llm_url(tmp_path, monkeypatch, fake_server):
+    """Beide gesetzt: der ausdruecklich gewaehlte Endpunkt gewinnt, der Anthropic-Schluessel geht nie dorthin."""
+    def reply(path, h, body):
+        assert "x-api-key" not in h and h.get("authorization") == "Bearer fremd"
+        return 200, {"choices": [{"message": {"content": '["A", "B"]'}}]}
+    Fake.reply = reply
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "geheim-anthropic")
+    monkeypatch.setenv("MESHCUT_LLM_URL", fake_server + "/v1/chat/completions")
+    monkeypatch.setenv("MESHCUT_LLM_MODEL", "m")
+    monkeypatch.setenv("MESHCUT_LLM_KEY", "fremd")
+    llm = ai.default_llm()
+    assert isinstance(llm, ai.OpenAICompatLlm)
+    assert ai.names_from_prompt("zwei teile", llm) == ["A", "B"]
+    assert "geheim-anthropic" not in repr(Fake.seen)
 
 
 @pytest.mark.parametrize("answer", ['kein json', '["a"]', '[1, 2]', '["a","A"]', '{"0": "x"}'])
@@ -463,3 +482,399 @@ def test_ply_unknown_format_is_named(tmp_path):
     (tmp_path / "f.ply").write_bytes(data)
     with pytest.raises(mc.MeshcutError, match="nicht unterstuetzt"):
         mc.load_mesh(tmp_path / "f.ply")
+
+
+# ----------------------------------------------------------------------------- Befunde der zweiten Pruefrunde
+def test_redirects_do_not_carry_the_key_to_another_address(tmp_path, monkeypatch, fake_server):
+    class Redirect(http.server.BaseHTTPRequestHandler):
+        hits = []
+
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            Redirect.hits.append((self.path, self.headers.get("Authorization")))
+            self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            self.send_response(302)
+            self.send_header("Location", "http://localhost:%d/zweiter" % self.server.server_address[1])
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def do_GET(self):
+            Redirect.hits.append((self.path, self.headers.get("Authorization")))
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Redirect)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        monkeypatch.setenv("MESHCUT_SEGMENT_URL", "http://127.0.0.1:%d/erster" % srv.server_address[1])
+        monkeypatch.setenv("MESHCUT_SEGMENT_KEY", "geheim")
+        src = write(tmp_path / "f.obj", shapes.cube(1.0))
+        with pytest.raises(mc.MeshcutError, match="Fehler 302"):
+            mc.segment(src, tmp_path / "o", backend="http", parts=2)
+        assert [p for p, _ in Redirect.hits] == ["/erster"]
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_command_labels_must_be_whole_numbers_before_anything_else(tmp_path, monkeypatch):
+    script = tmp_path / "frac.py"
+    script.write_text("import sys, numpy as np\nnp.save(sys.argv[1], np.array([0.9] * 6 + [1.9] * 6))\n")
+    monkeypatch.setenv("MESHCUT_SEGMENTER_CMD", '"%s" "%s" {output}' % (sys.executable, script))
+    src = write(tmp_path / "c.obj", shapes.cube(1.0))
+    with pytest.raises(mc.MeshcutError, match="ganze Zahlen"):
+        mc.segment(src, tmp_path / "o", backend="command", parts=2)
+
+
+def test_output_of_a_foreign_command_is_not_passed_on(tmp_path, monkeypatch):
+    script = tmp_path / "leak.py"
+    script.write_text("import sys\nsys.stderr.write('GEHEIMER_SCHLUESSEL')\nsys.exit(1)\n")
+    monkeypatch.setenv("MESHCUT_SEGMENTER_CMD", '"%s" "%s"' % (sys.executable, script))
+    src = write(tmp_path / "c.obj", shapes.cube(1.0))
+    with pytest.raises(mc.MeshcutError) as e:
+        mc.segment(src, tmp_path / "o", backend="command", parts=2)
+    assert "GEHEIMER" not in str(e.value) and "Code 1" in str(e.value)
+
+
+def test_a_half_sent_request_does_not_hold_a_thread_forever(tmp_path):
+    import socket
+    import time
+    srv = serve.make_http_server(serve.Tools(serve.Sandbox(tmp_path)), 0, token="tok", timeout=1)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        s = socket.create_connection(("127.0.0.1", srv.server_address[1]), timeout=10)
+        s.sendall(b"POST /v1/info HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer tok\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{")
+        t0 = time.time()
+        got = s.recv(4096)                                  # der Dienst muss die Verbindung selbst beenden
+        assert time.time() - t0 < 8 and (got == b"" or b"HTTP/1.1" in got)
+        s.close()
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+@pytest.mark.parametrize("names,moved", [(["../../victim.txt", "part_0.obj"], {}), (["part_0.obj", "meshcut.json"], {"0": "../victim.txt"}),
+                                         (["C:/Windows/x.txt"], {}), (["part_0.obj"], {"5": "part_0.obj"}), ("kaputt", {})])
+def test_recovery_journal_cannot_reach_outside_its_folder(tmp_path, names, moved):
+    """Das Journal liegt als Text im Ordner und darf nichts ausserhalb davon loeschen oder verschieben (auch nicht ueber verify)."""
+    src = write(tmp_path / "f.obj", figure())
+    mc.segment(src, tmp_path / "o", parts=3, format="obj")
+    victim = tmp_path / "victim.txt"
+    victim.write_text("bleibt")
+    aside = tmp_path / "o" / ".meshcut_boese"
+    aside.mkdir()
+    (aside / "journal.json").write_text(json.dumps({"state": "moving", "names": names, "moved": moved}))
+    (aside / "0").write_text("x")
+    mc.verify(tmp_path / "o")
+    assert victim.read_text() == "bleibt" and (tmp_path / "o" / "part_0.obj").is_file()
+
+
+def test_foreign_commands_never_inherit_stdin(monkeypatch):
+    """Ein versteckt gestarteter Dienst hat keine Konsole; erbte das Kindprogramm sein stdin, scheiterte der Start (Windows: WinError 6)."""
+    seen = {}
+
+    def spy(cmd, **kw):
+        seen.update(kw)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+    monkeypatch.setattr(ai.subprocess, "run", spy)
+    ai._no_window_run(["x"], 5)
+    assert seen["stdin"] is subprocess.DEVNULL and seen["shell"] is False and seen["capture_output"] is True and seen["timeout"] == 5
+
+
+# ============================================================================= gezielte Tests (Mutanten aus der zweiten Pruefrunde)
+# ----------------------------------------------------------------------------- Schluessel und Zugriff
+@pytest.mark.parametrize("auth", ["Bearer tok2", "Bearer to", "Bearer tox", "Bearer ", "tok", "Basic tok"])
+def test_http_key_must_match_exactly(api, auth):
+    port, root = api
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+    c.request("POST", "/v1/info", body=b"{}", headers={"Authorization": auth, "Content-Type": "application/json"})
+    assert c.getresponse().status == 401
+
+
+@pytest.mark.parametrize("path", ["/v1/tools", "/v1/health", "/v1/nope"])
+def test_http_get_needs_the_key_too(api, path):
+    port, _ = api
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+    c.request("GET", path)
+    assert c.getresponse().status == 401
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+    c.request("GET", path, headers={"Authorization": "Bearer tok"})
+    assert c.getresponse().status == (404 if path == "/v1/nope" else 200)
+
+
+def test_http_refuses_chunked_and_survives_deeply_nested_json(api):
+    port, _ = api
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+    c.request("POST", "/v1/info", body=iter([b"{}"]), headers={"Authorization": "Bearer tok", "Content-Type": "application/json"}, encode_chunked=True)
+    assert c.getresponse().status == 411
+    deep = b"[" * 200000 + b"]" * 200000
+    assert post(port, "/v1/info", deep)[0] == 400
+    assert post(port, "/v1/info", {"path": "x"})[0] == 400                                    # der Dienst lebt weiter
+
+
+def test_sandbox_refuses_null_byte_and_non_text(tmp_path):
+    sb = serve.Sandbox(tmp_path)
+    for bad in ("a\0b", "", "   ", None, 5, ["x"]):
+        with pytest.raises(mc.MeshcutError, match="Pfad fehlt"):
+            sb.path(bad, "p")
+
+
+def test_tools_run_one_at_a_time(tmp_path):
+    import time
+    state = {"active": 0, "peak": 0}
+
+    class Slow(serve.Tools):
+        def info(self, a):
+            state["active"] += 1
+            state["peak"] = max(state["peak"], state["active"])
+            time.sleep(0.15)
+            state["active"] -= 1
+            return {}
+    tools = Slow(serve.Sandbox(tmp_path))
+    ts = [threading.Thread(target=serve.call_tool, args=(tools, "info", {})) for _ in range(4)]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    assert state["peak"] == 1
+
+
+def test_split_options_must_have_the_right_type(tmp_path):
+    write(tmp_path / "f.obj", shapes.cube(1.0))
+    tools = serve.Tools(serve.Sandbox(tmp_path))
+    for key, bad in (("no_cap", "yes"), ("no_cap", 1), ("flip", "true"), ("verify", 0), ("wedges", True), ("wedges", "3"), ("grid", 2)):
+        with pytest.raises(mc.MeshcutError):
+            serve.call_tool(tools, "split", {"input": "f.obj", "outdir": "o", "plane": ["x=0.5"], key: bad})
+
+
+# ----------------------------------------------------------------------------- MCP
+def test_mcp_initialize_answers_with_a_version_it_speaks():
+    tools = serve.Tools(serve.Sandbox(os.getcwd()))
+    for ask, want in (("2024-11-05", "2024-11-05"), ("2025-03-26", "2025-03-26"), ("1999-01-01", serve.MCP_VERSIONS[0]), (None, serve.MCP_VERSIONS[0])):
+        r = serve.mcp_handle(tools, {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": ask} if ask else {}})
+        assert r["result"]["protocolVersion"] == want
+
+
+def test_mcp_any_tool_failure_is_an_error_result_not_the_end_of_the_service(tmp_path):
+    class Broken(serve.Tools):
+        def info(self, a):
+            raise RuntimeError("kaputt\nzweite Zeile")
+    out = serve.mcp_handle(Broken(serve.Sandbox(tmp_path)), {"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": "info", "arguments": {}}})
+    assert out["result"]["isError"] is True and out["result"]["content"][0]["text"] == "Fehler: kaputt"
+
+
+def test_mcp_stdio_survives_garbage_and_speaks_utf8(tmp_path):
+    write(tmp_path / "f.obj", shapes.cube(1.0))
+    env = dict(os.environ, PYTHONPATH=str(ROOT), PYTHONIOENCODING="cp1252")                 # Windows-Codepage darf das Protokoll nicht verbiegen
+    deep = "[" * 100000 + "]" * 100000
+    msgs = [deep,
+            json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "info", "arguments": {"path": "Pfad-äöü-€.obj"}}}, ensure_ascii=False),
+            json.dumps({"jsonrpc": "2.0", "id": 2, "method": "ping"})]
+    r = subprocess.run([sys.executable, str(ROOT / "kkmeshcut.py"), "serve", "--mcp", "--root", str(tmp_path)], input=("\n".join(msgs) + "\n").encode("utf-8"),
+                       capture_output=True, env=env, timeout=120)
+    out = [json.loads(l) for l in r.stdout.decode("utf-8").splitlines()]
+    assert out[0]["error"]["code"] in (-32700, -32600) and out[-1] == {"jsonrpc": "2.0", "id": 2, "result": {}}
+    assert out[1]["result"]["isError"]
+    assert b"\r\n" not in r.stdout
+
+
+# ----------------------------------------------------------------------------- Adapter
+@pytest.mark.parametrize("url", ["http://example.com/x", "http://10.0.0.1:80/x", "https://", "https:///pfad", "ftp://localhost/x", "localhost:80"])
+def test_check_url_refuses(url):
+    with pytest.raises(mc.MeshcutError):
+        ai.check_url(url, "X")
+
+
+@pytest.mark.parametrize("url", ["https://example.com/x", "http://localhost:8080/x", "http://127.0.0.1/x", "http://[::1]:9/x"])
+def test_check_url_accepts(url):
+    ai.check_url(url, "X")
+
+
+def test_check_url_names_the_reason():
+    with pytest.raises(mc.MeshcutError, match="https://"):
+        ai.check_url("http://example.com", "MESHCUT_X")
+    with pytest.raises(mc.MeshcutError, match="keine Adresse"):
+        ai.check_url("https:///pfad", "MESHCUT_X")
+
+
+@pytest.mark.parametrize("bad", [np.array([0.5, 1.0]), np.array([np.nan, 1.0]), np.array([np.inf, 1.0]), np.array([-1, 1]), np.array([0, 1, 2]),
+                                 np.array(["a", "b"]), np.zeros((2, 2), int)])
+def test_validate_labels_refuses(bad):
+    with pytest.raises(mc.MeshcutError):
+        ai.validate_labels(bad, 2)
+
+
+def test_validate_labels_accepts_whole_floats_and_bools():
+    assert ai.validate_labels(np.array([0.0, 2.0]), 2).tolist() == [0, 2]
+    assert ai.validate_labels(np.array([True, False]), 2).tolist() == [1, 0]
+
+
+@pytest.mark.parametrize("labels", [[0.5] * 12, [-1] * 12, [0] * 11])
+def test_http_backend_checks_the_map_it_gets(tmp_path, monkeypatch, fake_server, labels):
+    Fake.reply = lambda *a: (200, {"labels": labels})
+    monkeypatch.setenv("MESHCUT_SEGMENT_URL", fake_server)
+    src = write(tmp_path / "f.obj", shapes.cube(1.0))
+    with pytest.raises(mc.MeshcutError, match="ganze Zahlen|negativ|Werte"):
+        mc.segment(src, tmp_path / "o", backend="http", parts=2)
+
+
+def test_oversized_answers_are_refused(tmp_path, monkeypatch, fake_server):
+    Fake.reply = lambda *a: (200, {"labels": [0, 1] * 6})
+    monkeypatch.setattr(ai, "MAX_RESPONSE_BYTES", 10)
+    monkeypatch.setenv("MESHCUT_SEGMENT_URL", fake_server)
+    src = write(tmp_path / "f.obj", shapes.cube(1.0))
+    with pytest.raises(mc.MeshcutError, match="zu gross"):
+        mc.segment(src, tmp_path / "o", backend="http", parts=2)
+
+
+class _Fixed(ai.Segmenter):
+    name = "fest"
+
+    def __init__(self, labels):
+        self._labels = np.asarray(labels)
+
+    def labels(self, mesh, parts=None):
+        return self._labels
+
+
+def test_segment_mesh_checks_what_a_backend_returns(monkeypatch):
+    mesh = shapes.cube(1.0)
+    n = len(mesh.F)
+    monkeypatch.setitem(ai.SEGMENTERS, "fest", lambda: _Fixed([0] * n))
+    with pytest.raises(mc.MeshcutError, match="nur ein Teil"):
+        ai.segment_mesh(mesh, backend="fest")
+    monkeypatch.setitem(ai.SEGMENTERS, "fest", lambda: _Fixed([i % 3 for i in range(n)]))
+    with pytest.raises(mc.MeshcutError, match="3 Teile geliefert, gewuenscht waren 2"):
+        ai.segment_mesh(mesh, backend="fest", parts=2)
+    labels, _ = ai.segment_mesh(mesh, backend="fest")                       # ohne Wunsch ist jede Anzahl ab 2 recht
+    assert labels.tolist() == [i % 3 for i in range(n)]
+
+
+def test_components_must_find_the_wished_number():
+    with pytest.raises(mc.MeshcutError, match="2 getrennte Huellen, nicht 3"):
+        ai.ComponentsSegmenter().labels(two_cubes(), 3)
+    assert len(set(ai.ComponentsSegmenter().labels(two_cubes(), 2).tolist())) == 2
+
+
+def test_kmeans_starts_at_the_point_nearest_to_the_center_of_mass():
+    X = np.array([[0.0, 0, 0], [1, 0, 0], [2, 0, 0], [3, 0, 0], [10, 0, 0]])
+    w = np.full(5, 0.2)                                                     # Schwerpunkt x = 3.2 -> naechster Punkt x = 3
+    assert ai.start_centers(X, w, 3)[:, 0].tolist() == [3.0, 10.0, 0.0]
+    assert ai.start_centers(X, np.array([1.0, 0, 0, 0, 0]), 2)[:, 0].tolist() == [0.0, 10.0]           # Gewichte zaehlen
+
+
+def test_part_description_gives_area_shares():
+    mesh = two_cubes()
+    V = mesh.V.copy()
+    V[:8] *= 2.0                                                            # erster Wuerfel doppelt so gross: 4 von 5 Teilen der Flaeche
+    d = ai.describe_parts(mc.Mesh(V, mesh.F, "x"), ai.shell_labels(mesh))
+    assert sorted(p["area_share"] for p in d) == [0.2, 0.8]
+
+
+def test_llm_may_only_use_the_given_names():
+    class Foreign(ai.Llm):
+        def complete(self, system, user):
+            return '{"0": "Fremd", "1": "Beine"}'
+    mesh = two_cubes()
+    with pytest.raises(mc.MeshcutError):
+        ai.assign_names(mesh, ai.shell_labels(mesh), ["Kopf", "Beine"], Foreign())
+
+
+def test_command_timeout_is_enforced(tmp_path, monkeypatch):
+    script = tmp_path / "slow.py"
+    script.write_text("import time\ntime.sleep(20)\n")
+    monkeypatch.setenv("MESHCUT_SEGMENTER_CMD", '"%s" "%s"' % (sys.executable, script))
+    with pytest.raises(mc.MeshcutError, match="liess sich nicht ausfuehren"):
+        ai.CommandSegmenter(timeout=1).labels(shapes.cube(1.0), 2)
+
+
+def test_command_is_never_run_through_a_shell(tmp_path, monkeypatch):
+    script = tmp_path / "ok.py"
+    script.write_text("import sys, numpy as np\nnp.save(sys.argv[1], np.array([0] * 6 + [1] * 6))\n")
+    marker = tmp_path / "marker.txt"
+    monkeypatch.setenv("MESHCUT_SEGMENTER_CMD", '"%s" "%s" {output} & echo x > "%s"' % (sys.executable, script, marker))
+    ai.CommandSegmenter().labels(shapes.cube(1.0), 2)
+    assert not marker.exists()
+
+
+# ----------------------------------------------------------------------------- PLY (Fehler- und Sonderfaelle)
+HEAD = b"ply\nformat %s 1.0\nelement vertex %d\nproperty float x\nproperty float y\nproperty float z\nelement face %d\nproperty list uchar int vertex_indices\nend_header\n"
+
+
+@pytest.mark.parametrize("data,match", [
+    (b"ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\nproperty float z\nelement face 1\nproperty list foo int vertex_indices\nend_header\n", "unbekannter Typ"),
+    (b"ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\nproperty bar z\nend_header\n", "unbekannter Typ"),
+    (b"ply\nformat ascii 1.0\nelement vertex -3\nproperty float x\nproperty float y\nproperty float z\nelement face 0\nproperty list uchar int vertex_indices\nend_header\n", "negative Anzahl"),
+    (HEAD % (b"binary_little_endian", 3, 1) + struct.pack("<3f", 0, 0, 0), "abgeschnitten"),                                  # Eckpunkte fehlen
+    (HEAD % (b"binary_little_endian", 3, 1) + struct.pack("<9fB3i", 0, 0, 0, 1, 0, 0, 0, 1, 0, 3, 0, 1, 9), "Eckpunkt, den es nicht gibt"),
+])
+def test_ply_refuses_broken_files(data, match):
+    with pytest.raises(mc.MeshcutError, match=match):
+        mc.read_meshes_bytes("ply", data, "x")
+
+
+def test_ply_binary_mixed_face_sizes_use_the_slow_path():
+    verts = struct.pack("<12f", 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0)
+    faces = struct.pack("<B3i", 3, 0, 1, 2) + struct.pack("<B4i", 4, 0, 1, 2, 3)
+    got = mc.read_meshes_bytes("ply", HEAD % (b"binary_little_endian", 4, 2) + verts + faces, "x")[0]
+    got = got.V[got.F]
+    assert got.shape == (3, 3, 3)                                            # 1 Dreieck + 1 Viereck (= 2 Dreiecke)
+    assert got[0].tolist() == [[0, 0, 0], [1, 0, 0], [1, 1, 0]]
+
+
+def test_ply_faces_with_fewer_than_three_corners_are_skipped():
+    data = (b"ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\nproperty float z\nelement face 3\n"
+            b"property list uchar int vertex_indices\nend_header\n0 0 0\n1 0 0\n0 1 0\n2 0 1\n1 0\n3 0 1 2\n")
+    got = mc.read_meshes_bytes("ply", data, "x")[0]
+    assert got.F.shape == (1, 3)
+
+
+def test_ply_short_faces_are_skipped_but_their_indices_are_checked():
+    head = (b"ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\nproperty float z\nelement face 2\n"
+            b"property list uchar int vertex_indices\nend_header\n0 0 0\n1 0 0\n0 1 0\n3 0 1 2\n")
+    with pytest.raises(mc.MeshcutError, match="Eckpunkt, den es nicht gibt"):
+        mc.read_meshes_bytes("ply", head + b"2 0 99\n", "x")
+
+
+def test_serve_option_helper_checks_types():
+    for kind, bad, good in (("bool", "yes", True), ("bool", 1, False), ("int", True, 3), ("int", "3", 0), ("str", 5, "x"), ("strlist", "x", ["a"]), ("strlist", [1], [])):
+        with pytest.raises(mc.MeshcutError):
+            serve._opt({"k": bad}, "k", kind)
+        assert serve._opt({"k": good}, "k", kind) == good
+    assert serve._opt({}, "k", "bool") is None and serve._opt({"k": None}, "k", "int") is None
+
+
+def test_mcp_loop_survives_a_handler_that_raises(monkeypatch):
+    import io
+
+    def boom(tools, msg):
+        raise RuntimeError("innen kaputt")
+    monkeypatch.setattr(serve, "mcp_handle", boom)
+    out = io.StringIO()
+    serve.serve_mcp(None, io.StringIO('{"jsonrpc":"2.0","id":3,"method":"ping"}\n[]\n'), out)
+    got = [json.loads(l) for l in out.getvalue().splitlines()]
+    assert [g["error"]["code"] for g in got] == [-32603, -32603] and got[0]["id"] == 3 and got[1]["id"] is None
+
+
+def test_mcp_stdio_decodes_utf8_whatever_the_console_codepage(tmp_path):
+    name = "\u65e5\u672c-\u0434.obj"                                          # nicht in cp1252
+    write(tmp_path / name, shapes.cube(1.0))
+    env = dict(os.environ, PYTHONPATH=str(ROOT), PYTHONIOENCODING="cp1252")
+    msg = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "info", "arguments": {"path": name}}}, ensure_ascii=False)
+    r = subprocess.run([sys.executable, str(ROOT / "kkmeshcut.py"), "serve", "--mcp", "--root", str(tmp_path)], input=(msg + "\n").encode("utf-8"),
+                       capture_output=True, env=env, timeout=120)
+    out = json.loads(r.stdout.decode("utf-8"))
+    assert out["result"]["isError"] is False, out
+
+
+def test_ply_winding_is_kept_on_the_fast_path():
+    verts = struct.pack("<9f", 0, 0, 0, 1, 0, 0, 0, 1, 0)
+    got = mc.read_meshes_bytes("ply", HEAD % (b"binary_little_endian", 3, 1) + verts + struct.pack("<B3i", 3, 0, 1, 2), "x")[0]
+    assert got.V[got.F][0].tolist() == [[0, 0, 0], [1, 0, 0], [0, 1, 0]]
+
+
+def test_label_files_never_unpickle(tmp_path):
+    p = tmp_path / "l.npy"
+    np.save(p, np.array([{"a": 1}, 2], dtype=object), allow_pickle=True)
+    with pytest.raises(mc.MeshcutError, match="unlesbar"):
+        mc.read_label_file(p)

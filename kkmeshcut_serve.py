@@ -186,17 +186,21 @@ def serve_mcp(tools, stdin=None, stdout=None):
             continue
         try:
             msg = json.loads(line)
-        except ValueError:
+        except Exception:                                        # auch RecursionError bei tief verschachteltem JSON
             reply = _mcp_reply(None, error={"code": -32700, "message": "Kein gueltiges JSON"})
         else:
-            reply = mcp_handle(tools, msg)
+            try:
+                reply = mcp_handle(tools, msg)
+            except Exception as e:                               # eine kaputte Nachricht beendet nie den Dienst
+                reply = _mcp_reply(msg.get("id") if isinstance(msg, dict) else None,
+                                   error={"code": -32603, "message": "Interner Fehler: %s" % type(e).__name__})
         if reply is not None:
             stdout.write(json.dumps(reply, ensure_ascii=False) + "\n")
             stdout.flush()
 
 
 # ============================================================================= HTTP
-def make_handler(tools, token):
+def make_handler(tools, token, timeout=30):
     class H(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -242,9 +246,11 @@ def make_handler(tools, token):
                 n = -1
             if n < 0 or n > MAX_BODY:
                 return self._send(413, {"error": "Anfrage zu gross (hoechstens %d Byte)." % MAX_BODY})
+            if self.headers.get("Transfer-Encoding"):
+                return self._send(411, {"error": "Content-Length noetig (kein chunked)."})
             try:
                 args = json.loads(self.rfile.read(n).decode("utf-8") or "{}")
-            except (ValueError, UnicodeDecodeError):
+            except Exception:                                    # ValueError, UnicodeDecodeError, RecursionError
                 return self._send(400, {"error": "Kein gueltiges JSON."})
             try:
                 self._send(200, call_tool(tools, self.path[4:], args))
@@ -252,13 +258,16 @@ def make_handler(tools, token):
                 self._send(400, {"error": str(e)})
             except Exception as e:
                 self._send(500, {"error": (str(e).splitlines() or [type(e).__name__])[0]})
+    H.timeout = timeout                                           # ein stockender oder halber Aufruf haelt keinen Thread dauerhaft fest
     return H
 
 
-def make_http_server(tools, port, host="127.0.0.1", token=None):
+def make_http_server(tools, port, host="127.0.0.1", token=None, timeout=30):
     if host not in ("127.0.0.1", "localhost", "::1") and not token:
         raise MeshcutError("Eine Adresse ausser localhost braucht MESHCUT_TOKEN (Schluessel).")
-    return ThreadingHTTPServer((host, int(port)), make_handler(tools, token))
+    srv = ThreadingHTTPServer((host, int(port)), make_handler(tools, token, timeout))
+    srv.daemon_threads = True
+    return srv
 
 
 def cmd_serve(a):
@@ -266,6 +275,11 @@ def cmd_serve(a):
     if a.mcp == bool(a.http is not None):
         raise MeshcutError("Genau eines angeben: --mcp oder --http PORT.")
     if a.mcp:
+        for stream, newline in ((sys.stdin, None), (sys.stdout, "\n")):     # Protokoll ist UTF-8, unabhaengig von der Windows-Codepage
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace", **({"newline": newline} if newline else {}))
+            except (AttributeError, ValueError):
+                pass
         serve_mcp(tools)
         return
     token = os.environ.get("MESHCUT_TOKEN", "").strip() or None

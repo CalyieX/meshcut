@@ -133,6 +133,17 @@ def triangle_hash(V, F, precision="float64"):
     return h.hexdigest()
 
 
+def sequence_hash(V, F, precision="float64"):
+    """SHA-256 ueber die Dreiecke in ihrer Reihenfolge (Eckpunkte in Umlaufreihenfolge). Gegenstueck zu triangle_hash, das die
+    Reihenfolge bewusst ignoriert: zusammen belegen beide `Dieselben Dreiecke` und `in derselben Reihenfolge wie die Quelle`."""
+    F = np.asarray(F, dtype=np.int64).reshape(-1, 3)
+    h = hashlib.sha256()
+    h.update(b"meshcut-seq-1:" + precision.encode() + b":")
+    if len(F):
+        h.update(np.ascontiguousarray(quantize(V, precision)[F], dtype="<f8").tobytes())
+    return h.hexdigest()
+
+
 def volume_area(V, F):
     """Vorzeichenbehaftetes Volumen und Flaeche (relativ zum Schwerpunkt der Eckpunkte, das haelt die Rundung klein)."""
     if len(F) == 0:
@@ -1484,11 +1495,10 @@ def read_ply(data):
     tris = []
     for ids in faces:
         ids = [int(i) for i in ids]
-        if len(ids) < 3:
-            continue
-        if min(ids) < 0 or max(ids) >= len(V):
+        if ids and (min(ids) < 0 or max(ids) >= len(V)):
             fail("PLY: Flaeche verweist auf einen Eckpunkt, den es nicht gibt.")
-        tris.extend(_triangulate_polygon(V, ids))
+        if len(ids) >= 3:                                            # Linien und Punkte sind keine Flaechen
+            tris.extend(_triangulate_polygon(V, ids))
     return [("", V[np.array(tris, dtype=np.int64).reshape(-1, 3)] if tris else np.zeros((0, 3, 3)))]
 
 
@@ -1685,7 +1695,8 @@ def check_sidecar(side):
     if len(set(ids)) != len(ids):
         raise ValueError("doppelte Teilnummern")
     src = side["source"]
-    if not (isinstance(src, dict) and isinstance(src.get("faces"), int) and src.get("precision") in ("float32", "float64") and isinstance(src.get("hash"), str)):
+    if not (isinstance(src, dict) and isinstance(src.get("faces"), int) and src.get("precision") in ("float32", "float64") and isinstance(src.get("hash"), str)
+            and isinstance(src.get("order_hash"), str)):
         raise ValueError("source")
     if "names" in side:
         nm = side["names"]
@@ -1716,7 +1727,7 @@ def make_sidecar(res, fmt, stats, files):
     q = quantize(src.V, precision)
     side = {"meshcut": 1, "version": __version__, "mode": res.mode, "format": fmt,
             "source": {"name": src.name, "faces": int(len(src.F)), "vertices": int(len(src.V)), "precision": precision,
-                       "hash": triangle_hash(src.V, src.F, precision), "quantized": bool((q != src.V).any()),
+                       "hash": triangle_hash(src.V, src.F, precision), "order_hash": sequence_hash(src.V, src.F, precision), "quantized": bool((q != src.V).any()),
                        "volume": stats["volume"], "area": stats["area"], "diag": stats["diag"]},
             "planes": [p.to_json() for p in res.planes],
             "split_ids": enc_array(res.split_ids.astype(np.int64)), "split_coords": enc_array(res.split_coords.astype(np.float64)),
@@ -1768,6 +1779,11 @@ def recover_outdir(out):
         try:
             j = json.loads((aside / JOURNAL).read_text(encoding="utf-8"))
             names, moved = j["names"], {int(k): v for k, v in j["moved"].items()}
+            # Das Journal ist nur Text im Ordner: nichts daraus darf aus dem Ordner herausfuehren oder Fremdes treffen
+            if (j["state"] not in ("moving", "done") or not isinstance(names, list)
+                    or not all(isinstance(n, str) and (PART_NAME.fullmatch(n) or n in MULTI_NAME.values() or n == SIDECAR) for n in names)
+                    or not all(0 <= i < len(names) and v == names[i] for i, v in moved.items())):
+                raise ValueError("Journal unbrauchbar")
             if j["state"] != "done":
                 fresh = [n for n in names if n not in moved.values()]            # Namen ohne Vorgaenger: nur neu installiert
                 for n in fresh:
@@ -2010,6 +2026,9 @@ def verify_folder(folder, source=None):
     joined = join_with_sidecar(parts, side)
     jh = triangle_hash(joined.V, joined.F, prec)
     add("hash", jh == side["source"]["hash"], "zusammengesetzt %s... %s Hash der Quelle (%s)" % (jh[:12], "=" if jh == side["source"]["hash"] else "!=", prec))
+    oh = sequence_hash(joined.V, joined.F, prec)
+    add("reihenfolge", oh == side["source"]["order_hash"], "Dreiecke in der Reihenfolge der Quelle" if oh == side["source"]["order_hash"]
+        else "dieselben Dreiecke, aber in anderer Reihenfolge als in der Quelle - die Zuordnung in %s wurde veraendert" % SIDECAR)
     # 2. Teile einzeln
     vol_sum = area_sum = 0.0
     all_tight = True
@@ -2045,6 +2064,8 @@ def verify_folder(folder, source=None):
         src_mesh = load_mesh(source)
         sh = triangle_hash(src_mesh.V, src_mesh.F, prec)
         add("quelle", sh == side["source"]["hash"], "Quelldatei %s... %s Hash in der Begleitdatei" % (sh[:12], "=" if sh == side["source"]["hash"] else "!="))
+        add("quelle-reihenfolge", sequence_hash(src_mesh.V, src_mesh.F, prec) == side["source"]["order_hash"],
+            "Dreiecksreihenfolge der Quelldatei stimmt mit der Begleitdatei ueberein")
         naive = join_plain([Mesh(V, F) for _, V, F in parts]) if side["mode"] != "labels" else joined
         hd, sampled = hausdorff_vertices(src_mesh.V, src_mesh.F, naive.V, naive.F)
         mag = float(np.abs(src_mesh.V).max()) if len(src_mesh.V) else 0.0
@@ -2178,6 +2199,8 @@ def cmd_join(a):
         say("Mit %s zusammengesetzt: %d Dreiecke, Hash %s %s Quelle." % (SIDECAR, len(mesh.F), h[:12], "=" if h == side["source"]["hash"] else "!="))
         if h != side["source"]["hash"]:
             fail("Der Hash weicht von der Quelle ab - die Teile wurden veraendert.")
+        if sequence_hash(mesh.V, mesh.F, prec) != side["source"]["order_hash"]:
+            fail("Die Dreiecke sind dieselben, aber in anderer Reihenfolge als in der Quelle - %s wurde veraendert." % SIDECAR)
     else:
         meshes = []
         for p in inputs:

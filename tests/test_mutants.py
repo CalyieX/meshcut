@@ -236,17 +236,17 @@ def test_a_finished_journal_is_not_rolled_back(tmp_path, monkeypatch):
     out.mkdir()
     stage = tmp_path / "stage"
     stage.mkdir()
-    (stage / "a").write_text("neu")
-    (out / "a").write_text("alt")
+    (stage / "part_0.obj").write_text("neu")
+    (out / "part_0.obj").write_text("alt")
 
     def boom(folder):
         raise KeyboardInterrupt
     monkeypatch.setattr(mc, "rmtree_force", boom)
     with pytest.raises(KeyboardInterrupt):
-        mc.publish_files(stage, ["a"], out)
+        mc.publish_files(stage, ["part_0.obj"], out)
     monkeypatch.undo()
     mc.recover_outdir(out)
-    assert (out / "a").read_text() == "neu"
+    assert (out / "part_0.obj").read_text() == "neu"
     assert not [d for d in out.iterdir() if d.name.startswith(".meshcut_")]
 
 
@@ -262,7 +262,7 @@ def test_split_after_a_hard_kill_recovers_by_itself(tmp_path, n):
     driver = tmp_path / "crash.py"
     driver.write_text(CRASH)
     env = dict(os.environ, PYTHONPATH=str(ROOT))
-    r = subprocess.run([sys.executable, str(driver), str(src), str(out), str(n)], env=env, capture_output=True, text=True)
+    r = subprocess.run([sys.executable, str(driver), str(src), str(out), str(n)], env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL)
     assert r.returncode in (0, 77), r.stderr
     mc.split(src, out, plane=["z=0.6", "y=0.1"])                 # ohne vorheriges verify
     assert mc.verify(out, source=src)["ok"]
@@ -339,3 +339,33 @@ def test_ear_clipping_never_leaves_a_flat_remainder():
     assert emergencies == 0 and len(tris) == 2
     for a, b, c in tris:
         assert abs((P[b][0] - P[a][0]) * (P[c][1] - P[a][1]) - (P[b][1] - P[a][1]) * (P[c][0] - P[a][0])) > 1e-9
+
+
+# ----------------------------------------------------------------------------- Dreiecksreihenfolge (der Mengen-Hash sieht sie nicht)
+def test_verify_and_join_notice_swapped_triangle_order(tmp_path):
+    mesh = shapes.cube(2.0, sub=2)                               # 48 Dreiecke, abwechselnd auf zwei gleich grosse Teile
+    src = write_obj(tmp_path / "w.obj", mesh)
+    lab = tmp_path / "l.txt"
+    lab.write_text("\n".join(str(i % 2) for i in range(len(mesh.F))))
+    out = tmp_path / "o"
+    mc.split(src, out, labels=lab)
+    assert mc.verify(out, src)["ok"]
+    side_path = out / "meshcut.json"
+    side = json.loads(side_path.read_text())
+    a, b = side["parts"][0], side["parts"][1]
+    assert a["faces"] == b["faces"]
+    a["src"], b["src"] = b["src"], a["src"]                      # gleiche Dreiecksmenge, andere Reihenfolge -> derselbe Mengen-Hash
+    side_path.write_text(json.dumps(side))
+    r = mc.verify(out, src)
+    assert failed(r) == ["reihenfolge"], r["checks"]
+    assert r["source_hash"] == r["joined_hash"]
+    cli = subprocess.run([sys.executable, str(ROOT / "kkmeshcut.py"), "join", str(out), str(tmp_path / "j.obj")],
+                         capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    assert cli.returncode != 0 and "Reihenfolge" in cli.stdout + cli.stderr
+
+
+def test_sequence_hash_is_order_dependent_and_triangle_hash_is_not():
+    mesh = shapes.cube(1.0)
+    perm = np.arange(len(mesh.F))[::-1]
+    assert mc.triangle_hash(mesh.V, mesh.F) == mc.triangle_hash(mesh.V, mesh.F[perm])
+    assert mc.sequence_hash(mesh.V, mesh.F) != mc.sequence_hash(mesh.V, mesh.F[perm])
