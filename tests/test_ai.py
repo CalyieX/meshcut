@@ -455,3 +455,11 @@ def test_write_split_refuses_unusable_names(tmp_path):
             mc.write_split(res, tmp_path / "o", "stl")
     res.names = {0: "Kopf", 1: "Rumpf", 2: "Beine"}
     assert mc.write_split(res, tmp_path / "ok", "stl")["names"]["2"] == "Beine"
+
+
+def test_ply_unknown_format_is_named(tmp_path):
+    data = (b"ply\nformat binary_middle_endian 1.0\nelement vertex 1\nproperty float x\nproperty float y\nproperty float z\n"
+            b"element face 0\nproperty list uchar int vertex_indices\nend_header\n" + b"\0" * 12)
+    (tmp_path / "f.ply").write_bytes(data)
+    with pytest.raises(mc.MeshcutError, match="nicht unterstuetzt"):
+        mc.load_mesh(tmp_path / "f.ply")
