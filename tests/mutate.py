@@ -197,6 +197,38 @@ MUTANTS = [
     ('r5 kern: Journal moved keine Zuordnung', 'TypeError, AttributeError) as e', 'TypeError) as e'),
     ('r5 kern: Tupel grid mit Komma', '("x" if key in ("grid", "max") else ",")', '","'),
     ('r5 kern: Komma im Namen erlaubt', 'if any("," in str(v) for v in val):', 'if False:'),
+    ('r6 edit: Loch nicht geschlossen', '    if close:  ', '    if False:  ', "kkmeshcut_edit.py"),
+    ('r6 edit: Deckel falsch herum', 'rloop = loop[::-1]', 'rloop = loop', "kkmeshcut_edit.py"),
+    ('r6 edit: Loch immer eben', 'flat = float(np.abs((Pr - cen) @ n).max()) <= HOLE_PLANAR * diam', 'flat = True', "kkmeshcut_edit.py"),
+    ('r6 edit: Material nicht von der Umgebung', 'ref = sc.faces[max(faces_adj, key=lambda fi: mats[sc.faces[fi].mat])]', 'ref = sc.faces[removed[0]]', "kkmeshcut_edit.py"),
+    ('r6 edit: Deckel ohne UV', 'corners.append((x[1], x[2], vn_flat))', 'corners.append((x[1], -1, vn_flat))', "kkmeshcut_edit.py"),
+    ('r6 edit: Selbstpruefung aus', 'if got != want or len(back.faces) != len(sc_new.faces):', 'if False:', "kkmeshcut_edit.py"),
+    ('r6 edit: Selbstpruefung vergleicht mit sich', 'got = [back.signature(f) for f in back.faces[:len(kept_ids)]]', 'got = want', "kkmeshcut_edit.py"),
+    ('r6 edit: Ersatz ohne Material des Originals', 'mat = material if material else (region["materials"][0] if region["materials"] else None)', 'mat = material', "kkmeshcut_edit.py"),
+    ('r6 edit: mtllib mit Pfaden', 'if Path(m).name != m or m in ("", ".", ".."):', 'if False:', "kkmeshcut_edit.py"),
+    ('r6 edit: Materialname ungeprueft', 'if m is not None and (not m.strip()', 'if False and (not m.strip()', "kkmeshcut_edit.py"),
+    ('r6 edit: Eingabe ueberschreibbar', 'fail("Die Ausgabe darf nicht die Eingabedatei sein.")', 'pass', "kkmeshcut_edit.py"),
+    ('r6 edit: Nummer True', 'if isinstance(region, bool):', 'if False:', "kkmeshcut_edit.py"),
+    ('r6 edit: groesstes statt kleinstes Element', 'return min(cand, key=lambda r: r["faces"])', 'return max(cand, key=lambda r: r["faces"])', "kkmeshcut_edit.py"),
+    ('r6 edit: ganzes Netz als Element', 'if len(faces) == n:  ', 'if False:  ', "kkmeshcut_edit.py"),
+    ('r6 edit: doppelte Elemente', '        if key in seen:', '        if False:', "kkmeshcut_edit.py"),
+    ('r6 edit: flaches Element ohne Dicke', 'half = np.maximum(half, 0.025 * float(half.max()) + 1e-12)', 'pass', "kkmeshcut_edit.py"),
+    ('r6 edit: UV-Bereich des Originals', '        if uvs:\n            arr =', '        if False:\n            arr =', "kkmeshcut_edit.py"),
+    ('r6 edit: Ersatz ohne Glaettung', 'smooth = "1" if kind != "box" else ""', 'smooth = ""', "kkmeshcut_edit.py"),
+    ('r6 edit: Elementkappe verwirft die kleinsten nicht', 'keep = sorted(sorted(range(len(cand)), key=lambda i: -len(cand[i][2]))[:MAX_REGIONS])', 'keep = list(range(MAX_REGIONS))', "kkmeshcut_edit.py"),
+    ('r6 edit: Flaechenlimit parse', 'if len(sc.faces) >= MAX_EDIT_FACES:', 'if False:', "kkmeshcut_edit.py"),
+    ('r6 edit: Flaechenlimit Mesh', 'if len(mesh.F) > MAX_EDIT_FACES:', 'if False:', "kkmeshcut_edit.py"),
+    ('r6 edit: Selbstpruefung Reihenfolge', 'want = [src_scene.signature(src_scene.faces[i]) for i in kept_ids]', 'want = sorted(src_scene.signature(src_scene.faces[i]) for i in kept_ids)', "kkmeshcut_edit.py"),
+    ('r6 edit: Punkt ohne Pruefung', '    if len(v) != 3 or not all(math.isfinite(x) for x in v):', '    if len(v) != 3:', "kkmeshcut_edit.py"),
+    ('r6 edit: leere Auswahl', 'if len(given) != 1:', 'if len(given) > 1:', "kkmeshcut_edit.py"),
+    ('r6 edit: Rest bleibt nicht', '    if not kept:', '    if False:', "kkmeshcut_edit.py"),
+    ('r6 edit: Zylinderachse auto', 'ax = int(np.argmax(dev))', 'ax = 0', "kkmeshcut_edit.py"),
+    ('r6 edit: Form auto', 'shape = min(areas, key=lambda k: abs(math.log(areas[k] / max(region["area"], 1e-300))))', 'shape = "box"', "kkmeshcut_edit.py"),
+    ('r6 edit: Z-Puffer', 'upd = inside & (z > win)', 'upd = inside & (z < win)', "kkmeshcut_edit.py"),
+    ('r6 edit: Nummern nur sichtbar', 'visible[r["id"]] = bool(len(xs))', 'visible[r["id"]] = True', "kkmeshcut_edit.py"),
+    ('r6 edit: Komponenten ohne Lage', '    _, inv = np.unique(sc.V, axis=0, return_inverse=True)', '    inv = np.arange(len(sc.V))', "kkmeshcut_edit.py"),
+    ('r6 edit: Normalen der Kugel ungeprueft', 'vn = sc.add_vn(tn / tl) if (has_n and tl > 0) else -1', 'vn = -1', "kkmeshcut_edit.py"),
+    ('r6 edit: Mittelpunkt-Deckel ohne UV', 'cvt = sc.add_vt(arr.mean(axis=0))', 'cvt = -1', "kkmeshcut_edit.py"),
     ('r4 serve: MCP-Zeilenlaenge unbegrenzt', 'if len(line) > MAX_BODY and not line.endswith(NL):', 'if False:', "kkmeshcut_serve.py"),
     ('r4 serve: Host [::1] ohne Port', 'host = host[1:host.find("]")] if host.startswith("[") and "]" in host else', "host = ((host.rsplit(':', 1)[0].strip('[]')) if True else host) if False else", "kkmeshcut_serve.py"),
 ]
@@ -214,12 +246,12 @@ def run(mutant):
         shutil.copytree(REPO / "examples", work / "examples")
         (work / "docs").mkdir()
         mutated = src.replace(old, new, 1)
-        for extra in ("kkmeshcut.py", "kkmeshcut_ai.py", "kkmeshcut_serve.py"):
+        for extra in ("kkmeshcut.py", "kkmeshcut_ai.py", "kkmeshcut_serve.py", "kkmeshcut_edit.py"):
             shutil.copy(REPO / extra, work / extra)
         (work / target).write_text(mutated, encoding="utf-8")
         shutil.copy(work / "kkmeshcut.py", work / "docs" / "kkmeshcut.py")
         (work / "docs" / "index.html").write_text((REPO / "docs" / "index.html").read_text(encoding="utf-8"), encoding="utf-8")
-        r = subprocess.run([PY, "-m", "pytest", "-x", "-q", "-p", "no:cacheprovider", "--tb=line", "tests"], cwd=work, capture_output=True, text=True, timeout=1500, creationflags=NO_WINDOW, stdin=subprocess.DEVNULL)
+        r = subprocess.run([PY, "-m", "pytest", "-x", "-q", "-p", "no:cacheprovider", "--tb=line", "tests/test_edit.py" if target == "kkmeshcut_edit.py" else "tests"], cwd=work, capture_output=True, text=True, timeout=1500, creationflags=NO_WINDOW, stdin=subprocess.DEVNULL)
         lines = r.stdout.splitlines()
         tail = [ln for ln in lines if ln.startswith("FAILED") or ln.startswith("ERROR")][:1]
         why = [ln for ln in lines if ln.startswith(("/", "E:", "C:", "D:")) and ": " in ln][:1]            # Zeile aus --tb=line

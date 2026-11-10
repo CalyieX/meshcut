@@ -496,7 +496,7 @@ def test_serve_edit_tools_validate_arguments(tmp_path, tool, args, match):
 
 
 # ----------------------------------------------------------------------------- Schutz vor boesen Dateien und Eingaben
-@pytest.mark.parametrize("mtl", ["../evil.mtl", "sub/x.mtl", "/abs.mtl", "..", "C:\evil.mtl"])
+@pytest.mark.parametrize("mtl", ["../evil.mtl", "sub/x.mtl", "/abs.mtl", "..", "C:" + chr(92) + "evil.mtl"])
 def test_mtllib_cannot_make_meshcut_write_outside(tmp_path, mtl):
     d = tmp_path / "in"
     d.mkdir()
@@ -567,3 +567,73 @@ def test_regions_refuses_links_as_target(tmp_path):
         pytest.skip("keine Links moeglich")
     with pytest.raises(mc.MeshcutError, match="Link"):
         mc.regions(p, link)
+
+
+# ----------------------------------------------------------------------------- gezielte Tests (Mutanten, Runde 6)
+def test_region_cap_keeps_the_biggest_parts_in_file_order(tmp_path, monkeypatch):
+    monkeypatch.setattr(ed, "MAX_REGIONS", 3)
+    parts = [shapes.cube(1.0, lo=(10 * i, 0, 0), sub=s) for i, s in enumerate([1, 3, 1, 3, 2, 1])]
+    off = np.cumsum([0] + [len(c.V) for c in parts])
+    V = np.vstack([c.V for c in parts])
+    F = np.vstack([c.F + o for c, o in zip(parts, off)])
+    p = tmp_path / "many.stl"
+    p.write_bytes(mc.mesh_bytes("stl", V, F))
+    sc, regs = regions_of(p)
+    assert [r["triangles"] for r in regs] == [len(parts[1].F), len(parts[3].F), len(parts[4].F)]
+    assert [r["bbox"]["min"][0] for r in regs] == [10.0, 30.0, 40.0]
+
+
+@pytest.mark.parametrize("ext,axis", [((2, 1, 1), 0), ((1, 3, 1), 1), ((1, 1, 4), 2)])
+def test_cylinder_axis_is_the_odd_one_out(ext, axis):
+    reg = {"bbox": {"min": [0, 0, 0], "max": list(ext)}, "area": 10.0}
+    assert ed.choose_shape(reg, "cylinder", "auto") == ("cylinder", axis)
+    assert ed.choose_shape(reg, "cylinder", "y")[1] == 1
+
+
+def test_hidden_part_is_marked_not_visible(tmp_path):
+    outer = shapes.cube(4.0, lo=(0, 0, 0))
+    inner = shapes.cube(1.0, lo=(1.5, 1.5, 1.5))
+    V = np.vstack([outer.V, inner.V])
+    F = np.vstack([outer.F, inner.F + len(outer.V)])
+    p = tmp_path / "i.stl"
+    p.write_bytes(mc.mesh_bytes("stl", V, F))
+    js = mc.regions(p, tmp_path / "r", size=300)
+    assert [r["visible"] for r in js["regions"]] == [True, False]
+
+
+def test_vertices_at_the_same_place_belong_to_one_part_even_when_not_shared(tmp_path):
+    """OBJ aus Dreiecksuppe (jede Flaeche eigene Eckpunkte): ein Quader ist trotzdem ein Teil."""
+    lines = []
+    for ox in (0, 5):
+        c = shapes.cube(1.0, lo=(ox, 0, 0))
+        for f in c.F:
+            for k in f:
+                lines.append("v %r %r %r" % tuple(float(x) for x in c.V[k]))
+    n = 0
+    for _ in range(24):
+        lines.append("f %d %d %d" % (n + 1, n + 2, n + 3))
+        n += 3
+    p = tmp_path / "soup.obj"
+    p.write_text("\n".join(lines) + "\n")
+    sc, regs = regions_of(p)
+    assert [(r["kind"], r["triangles"]) for r in regs] == [("teil", 12), ("teil", 12)]
+
+
+def test_centre_fan_gets_a_uv_in_the_middle_of_the_rim(tmp_path):
+    h, b = cube_lines((0, 0, 0), (2, 2, 2), 0, 0, 0, ["a", "b", "c", "a", "b", "c"], "w")
+    out, fi = [], 0
+    for ln in h + b:
+        if ln.startswith("f "):
+            out.append("g " + ("weg" if fi in (1, 3, 4) else "rest"))
+            fi += 1
+        out.append(ln)
+    p = tmp_path / "w.obj"
+    p.write_text("\n".join(out) + "\n")
+    mc.remove(p, name="weg", out=tmp_path / "o.obj")
+    new = ed.read_scene(tmp_path / "o.obj")
+    fan = new.faces[3:]
+    centre = {c[1] for f in fan for c in f.c if c[0] == max(cc[0] for ff in fan for cc in ff.c)}
+    assert len(centre) == 1 and next(iter(centre)) >= 0
+    uv = [float(x) for x in new.vt[next(iter(centre))].split()]
+    rim = np.array([[float(x) for x in new.vt[c[1]].split()] for f in fan for c in f.c if c[1] >= 0])
+    assert rim.min(axis=0)[0] - 1e-9 <= uv[0] <= rim.max(axis=0)[0] + 1e-9 and all(c[1] >= 0 for f in fan for c in f.c)
