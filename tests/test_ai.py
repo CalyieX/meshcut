@@ -981,3 +981,35 @@ def test_sandbox_follows_links_out_of_the_root_never(tmp_path):
             pytest.skip("keine Symlinks erlaubt")
     with pytest.raises(mc.MeshcutError, match="ausserhalb"):
         serve.Sandbox(root).path("ziel/x.obj", "p")
+
+
+# ----------------------------------------------------------------------------- Runde 4: Dienst
+def test_mcp_overlong_line_is_refused_and_the_loop_goes_on(monkeypatch):
+    import io
+    monkeypatch.setattr(serve, "MAX_BODY", 200)
+    inp = io.StringIO("x" * 1000 + "\n" + '{"jsonrpc":"2.0","id":5,"method":"ping"}\n')
+    out = io.StringIO()
+    serve.serve_mcp(None, inp, out)
+    got = [json.loads(l) for l in out.getvalue().splitlines()]
+    assert got[0]["error"]["code"] == -32600 and "zu lang" in got[0]["error"]["message"] and got[1]["result"] == {} and got[1]["id"] == 5
+
+
+@pytest.mark.parametrize("host,code", [("localhost", 200), ("localhost:8765", 200), ("127.0.0.1", 200), ("127.0.0.1:1", 200), ("[::1]", 200), ("[::1]:8765", 200),
+                                        ("evil.example", 401), ("evil.example:80", 401), ("localhost.evil.example", 401), ("", 401)])
+def test_local_host_header_forms(tmp_path, host, code):
+    srv = serve.make_http_server(serve.Tools(serve.Sandbox(tmp_path)), 0)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        import socket
+        s = socket.create_connection(("127.0.0.1", srv.server_address[1]), timeout=10)
+        s.sendall(("GET /v1/health HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n" % host).encode())
+        got = b""
+        while True:
+            d = s.recv(4096)
+            if not d:
+                break
+            got += d
+        assert got.split(b" ", 2)[1] == str(code).encode()
+    finally:
+        srv.shutdown()
+        srv.server_close()

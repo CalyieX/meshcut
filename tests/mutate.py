@@ -171,6 +171,17 @@ MUTANTS = [
     ('r3 serve: Format nicht geprueft', 'if v not in mc.FORMATS:', 'if False:', "kkmeshcut_serve.py"),
     ('r3 serve: verify-Quelle leer uebersprungen', 'source=None if src is None else self.sb.path(src, "source")', 'source=self.sb.path(src, "source") if src else None', "kkmeshcut_serve.py"),
     ('r3 serve: labels ohne Sandbox', 'opts[key] = self.sb.path(v, "labels") if key == "labels" else v', 'opts[key] = v', "kkmeshcut_serve.py"),
+    ('r4 kern: 3MF Eckpunkte je Besuch neu', '        if oid not in parsed:\n            verts, tris = None, None', '        if True:\n            verts, tris = None, None'),
+    ('r4 kern: GLB Primitive je Besuch neu', 'if key not in prim_cache:', 'if True:'),
+    ('r4 kern: Zwischenordner ohne Marker geraeumt', 'and ((d / MARKER).is_file() or (d / JOURNAL).is_file())]', ']'),
+    ('r4 kern: Links beim Aufraeumen gefolgt', 'd.is_dir() and not link_like(d)]', 'd.is_dir()]'),
+    ('r4 kern: Hausdorff mit flaechenlosen Quelldreiecken', 'sF = src_mesh.F[_face_areas(src_mesh.V, src_mesh.F) > 0]', 'sF = src_mesh.F'),
+    ('r4 kern: leeres Netz durchgelassen', '    if len(mesh.F) == 0:\n        fail("%s enthaelt keine Dreiecke." % Path(path).name)', '    if False:\n        fail("%s enthaelt keine Dreiecke." % Path(path).name)'),
+    ('r4 kern: leeres join durchgelassen', '        if len(mesh.F) == 0:\n            fail("Die Eingabedateien enthalten keine Dreiecke.")', '        if False:\n            fail("Die Eingabedateien enthalten keine Dreiecke.")'),
+    ('r4 kern: Polygon-Gesamtarbeit ungezaehlt', 'self.left -= k * k', 'self.left -= 0'),
+    ('r4 kern: Marker nicht geschrieben', '    (d / MARKER).write_text("meshcut", encoding="utf-8")\n', '    pass\n'),
+    ('r4 serve: MCP-Zeilenlaenge unbegrenzt', 'if len(line) > MAX_BODY and not line.endswith(NL):', 'if False:', "kkmeshcut_serve.py"),
+    ('r4 serve: Host [::1] ohne Port', 'host = host[1:host.find("]")] if host.startswith("[") and "]" in host else', "host = ((host.rsplit(':', 1)[0].strip('[]')) if True else host) if False else", "kkmeshcut_serve.py"),
 ]
 
 

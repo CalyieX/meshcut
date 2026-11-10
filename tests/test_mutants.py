@@ -408,6 +408,7 @@ def test_reading_commands_leave_young_staging_folders_alone(tmp_path):
     src, out = split_to(tmp_path)
     young = out / ".meshcut_laeuft"
     young.mkdir()
+    (young / mc.MARKER).write_text("meshcut")
     (young / "x").write_text("gehoert einem laufenden split")
     assert mc.verify(out, src)["ok"]
     mc.join(out, tmp_path / "back.obj")
@@ -544,3 +545,107 @@ def test_damaged_sidecar_gives_clean_errors_only(tmp_path, fmt):
                 except Exception as e:                           # roher Fehler = Luecke
                     raw.append((p, mode, type(e).__name__))
     assert not raw, raw[:5]
+
+
+# ----------------------------------------------------------------------------- Runde 4
+def test_reading_commands_only_touch_their_own_staging_folders(tmp_path):
+    src, out = split_to(tmp_path)
+    foreign = out / ".meshcut_notes"                             # gleicher Namensanfang, aber nicht von meshcut
+    foreign.mkdir()
+    (foreign / "wichtig.txt").write_text("bleibt")
+    os.utime(foreign, (1, 1))
+    mine = out / ".meshcut_abgebrochen"
+    mine.mkdir()
+    (mine / mc.MARKER).write_text("meshcut")
+    os.utime(mine, (1, 1))
+    assert mc.verify(out, src)["ok"]
+    assert (foreign / "wichtig.txt").read_text() == "bleibt" and not mine.exists()
+
+
+def test_recovery_never_follows_links_out_of_the_folder(tmp_path, capsys):
+    src, out = split_to(tmp_path)
+    outside = tmp_path / "aussen"
+    outside.mkdir()
+    (outside / "datei.txt").write_text("bleibt")
+    link = out / ".meshcut_evil"
+    if os.name == "nt":
+        r = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)], capture_output=True, stdin=subprocess.DEVNULL, creationflags=0x08000000)
+        if r.returncode:
+            pytest.skip("Junction nicht moeglich")
+    else:
+        try:
+            os.symlink(outside, link, target_is_directory=True)
+        except OSError:
+            pytest.skip("keine Symlinks erlaubt")
+    (outside / mc.MARKER).write_text("meshcut")                    # selbst mit Marker: ein Link wird nie angefasst
+    capsys.readouterr()
+    mc.recover_outdir(out)
+    assert capsys.readouterr().err == ""                         # nicht einmal ein Versuch, den Link zu raeumen
+    assert (outside / "datei.txt").read_text() == "bleibt" and (outside / mc.MARKER).exists()
+    mc.split(src, out, plane=["x=0.3"])                          # und split laeuft weiter
+
+
+def test_flat_triangle_off_the_surface_does_not_fail_hausdorff(tmp_path):
+    T = np.array([[[2.0, 0, 0], [2, 0, 0], [0, 3, 0]], [[1.0, 1, 0], [1, 3, 0], [2, 0, 0]]])
+    V, F = mc.weld_triangles(T)
+    src = tmp_path / "a.stl"
+    src.write_bytes(mc.mesh_bytes("stl", V, F, "x"))
+    mc.split(src, tmp_path / "o", plane=["1,1,0,2", "1,-1,0,0"], no_cap=True)
+    r = mc.verify(tmp_path / "o", source=src)
+    assert r["ok"], r["checks"]
+
+
+@pytest.mark.parametrize("cmd", ["info", "split", "grid", "labels", "join"])
+def test_empty_meshes_get_one_clean_message(tmp_path, cmd):
+    e = tmp_path / "e.ply"
+    e.write_bytes(b"ply\nformat ascii 1.0\nelement vertex 0\nproperty float x\nproperty float y\nproperty float z\nelement face 0\n"
+                  b"property list uchar int vertex_indices\nend_header\n")
+    args = {"info": ["info", str(e)], "split": ["split", str(e), str(tmp_path / "o"), "--plane", "x=0"],
+            "grid": ["split", str(e), str(tmp_path / "o"), "--grid", "2"], "labels": ["split", str(e), str(tmp_path / "o"), "--labels", str(e)],
+            "join": ["join", str(e), str(tmp_path / "j.stl")]}[cmd]
+    r = subprocess.run([sys.executable, str(ROOT / "kkmeshcut.py")] + args, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    assert r.returncode != 0 and "keine Dreiecke" in r.stdout + r.stderr and "Traceback" not in r.stderr
+
+
+def test_many_polygons_share_one_work_budget(monkeypatch):
+    monkeypatch.setattr(mc, "MAX_POLYGON_WORK", 500)
+    ring = "\n".join("v %f %f 0" % (np.cos(a), np.sin(a)) for a in np.linspace(0, 2 * np.pi, 8, endpoint=False))
+    faces = "\n".join("f 1 2 3 4 5 6 7 8" for _ in range(20))     # jede Flaeche 64 Einheiten: 8 passen, 20 nicht
+    with pytest.raises(mc.MeshcutError, match="zu aufwendig"):
+        mc.read_meshes_bytes("obj", (ring + "\n" + faces + "\n").encode(), "x")
+    assert len(mc.read_meshes_bytes("obj", (ring + "\n" + "\n".join(faces.split("\n")[:7]) + "\n").encode(), "x")[0].F) == 7 * 6
+
+
+def test_instances_of_a_big_mesh_do_not_reparse_it(tmp_path):
+    import time
+    nv, nc = 100_000, 400
+    vs = "".join('<vertex x="%d" y="%d" z="%d"/>' % (i, i % 7, i % 5) for i in range(nv))
+    xml = ('<model unit="millimeter"><resources><object id="1"><mesh><vertices>%s</vertices><triangles><triangle v1="0" v2="1" v3="2"/></triangles></mesh></object>'
+           '<object id="2"><components>%s</components></object></resources><build><item objectid="2"/></build></model>') % (vs, "".join('<component objectid="1"/>' for _ in range(nc)))
+    t0 = time.time()
+    got = mc.read_3mf(_3mf(xml))
+    assert len(got[0][1]) == nc and time.time() - t0 < 20            # frueher ~105 ms je Instanz (40 s)
+
+
+def test_production_limits_hold_without_monkeypatching():
+    one = ("<object id=\"1\"><mesh><vertices>" + "".join('<vertex x="%d" y="0" z="0"/>' % i for i in range(1002)) + "</vertices><triangles>"
+           + "".join('<triangle v1="%d" v2="%d" v3="%d"/>' % (i, i + 1, i + 2) for i in range(1000)) + "</triangles></mesh></object>")
+    xml = ('<model unit="millimeter"><resources>%s<object id="2"><components>%s</components></object></resources><build><item objectid="2"/></build></model>'
+           % (one, "".join('<component objectid="1"/>' for _ in range(mc.MAX_READ_TRIANGLES // 1000 + 5))))
+    with pytest.raises(mc.MeshcutError, match="Dreiecke nach dem Aufloesen"):
+        mc.read_3mf(_3mf(xml))
+    with pytest.raises(mc.MeshcutError, match="entpackt"):
+        mc.read_3mf(_3mf("<model>" + " " * (mc.MAX_XML_BYTES + 10) + "</model>"))
+
+
+def test_glb_instances_share_one_parse_of_the_mesh(monkeypatch):
+    calls = []
+    real = np.frombuffer
+    monkeypatch.setattr(np, "frombuffer", lambda *a, **k: (calls.append(1), real(*a, **k))[1])
+    nodes = [{"mesh": 0} for _ in range(200)]
+    js = {"asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": list(range(200))}], "nodes": nodes,
+          "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "mode": 4}]}],
+          "accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"}],
+          "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 36}], "buffers": [{"byteLength": 36}]}
+    got = mc.read_glb(_glb(js, np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], "<f4").tobytes()))
+    assert sum(len(t) for _, t in got) == 200 and len(calls) <= 3        # einmal gelesen, nicht 200 mal

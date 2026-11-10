@@ -46,9 +46,10 @@ __version__ = "0.1.0"
 
 MAX_PARTS = 1024
 MAX_PLANES = 60
-MAX_READ_TRIANGLES = 50_000_000                                # Dreiecke eines Netzes nach dem Aufloesen aller Instanzen (GLB-Knoten, 3MF-Komponenten)
+MAX_READ_TRIANGLES = 10_000_000                                # Dreiecke eines Netzes nach dem Aufloesen aller Instanzen (GLB-Knoten, 3MF-Komponenten)
 MAX_READ_VISITS = 100_000                                      # Knoten-/Komponentenbesuche beim Einlesen
-MAX_XML_BYTES = 1 << 28                                        # 256 MiB: mehr darf die Modelldatei einer 3MF entpackt nicht haben
+MAX_XML_BYTES = 1 << 27                                        # 128 MiB: mehr darf die Modelldatei einer 3MF entpackt nicht haben
+MAX_POLYGON_WORK = 100_000_000                                # Summe der Ecken-Quadrate aller Flaechen mit mehr als 4 Ecken je Datei (Ohrenschnitt)
 MAX_POLYGON = 5000                                             # Ecken einer einzelnen Flaeche (OBJ/PLY): der Ohrenschnitt waechst quadratisch
 READ_RECOVER_AGE = 600.0                                      # Sekunden: lesende Befehle raeumen nur Zwischenordner ab, die so alt sind
 PART_NAME = re.compile(r"part_(0|[1-9]\d*)\.(stl|obj|ply)")
@@ -907,7 +908,7 @@ def _split_ids(mesh, parts):
     n = len(mesh.F)
     srcs = np.concatenate([p.src for p in parts])
     tris = np.concatenate([p.V[p.F[:len(p.F) - p.n_cap]] for p in parts]) if len(srcs) else np.zeros((0, 3, 3))
-    cnt = np.bincount(srcs, minlength=n)
+    cnt = np.bincount(srcs.astype(np.intp), minlength=n)          # intp: im Browser (32 Bit) sonst Fehler
     first = np.zeros(n, np.int64)
     first[srcs] = np.arange(len(srcs))
     whole = cnt == 1
@@ -1089,6 +1090,11 @@ def dist_to_mesh(points, V, F, budget=4_000_000):
     return out
 
 
+def _face_areas(V, F):
+    P = V[F]
+    return np.linalg.norm(np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0]), axis=1) / 2
+
+
 def hausdorff_vertices(V1, F1, V2, F2, limit=3_000_000):
     """Groesster Abstand der Eckpunkte des einen Netzes zur Flaeche des anderen, in beide Richtungen. Bei grossen Netzen
     wird gleichmaessig eine Stichprobe der Eckpunkte genommen (Rueckgabe sagt es)."""
@@ -1139,13 +1145,25 @@ def read_stl(data):
     return [("", arr)]
 
 
-def _triangulate_polygon(Vs, ids):
+class _PolygonWork:
+    def __init__(self):
+        self.left = MAX_POLYGON_WORK
+
+    def use(self, k):
+        self.left -= k * k
+        if self.left < 0:
+            fail("Die Flaechen mit mehr als 4 Ecken sind zusammen zu aufwendig (Ohrenschnitt) - das Netz vorher in Dreiecke zerlegen.")
+
+
+def _triangulate_polygon(Vs, ids, work=None):
     """Polygon (Eckpunktnummern `ids` in Vs) in Dreiecke. Konvex: Faecher; konkav: Ohrenschnitt in der Polygonebene."""
     k = len(ids)
     if k == 3:
         return [(ids[0], ids[1], ids[2])]
     if k > MAX_POLYGON:
         fail("Eine Flaeche hat %d Ecken - mehr als %d werden nicht zerlegt." % (k, MAX_POLYGON))
+    if work is not None and k > 4:
+        work.use(k)
     X = np.array([Vs[i] for i in ids], dtype=np.float64)
     X = X - X.mean(axis=0)
     nrm = np.zeros(3)
@@ -1176,6 +1194,7 @@ def _triangulate_polygon(Vs, ids):
 
 
 def read_obj(data):
+    work = _PolygonWork()
     V = []
     objs = [("", [])]
     for ln in data.decode("utf-8", errors="replace").splitlines():
@@ -1202,7 +1221,7 @@ def read_obj(data):
                 fail("OBJ: Flaeche mit weniger als 3 Ecken.")
             if min(ids) < 0 or max(ids) >= len(V):
                 fail("OBJ: Flaeche verweist auf einen Eckpunkt, den es nicht gibt.")
-            objs[-1][1].extend(_triangulate_polygon(V, ids))
+            objs[-1][1].extend(_triangulate_polygon(V, ids, work))
     Va = np.array(V, dtype=np.float64).reshape(-1, 3)
     res = [(n, Va[np.array(f, dtype=np.int64).reshape(-1, 3)]) for n, f in objs if f]
     if not res:
@@ -1282,6 +1301,21 @@ def read_3mf(data):
 
     budget = _ReadBudget("3MF")
 
+    parsed = {}                                                  # Eckpunkte/Dreiecke je Objekt nur einmal einlesen: jeder Besuch kostet sonst die ganze Datei
+
+    def mesh_arrays(oid, mesh):
+        if oid not in parsed:
+            verts, tris = None, None
+            for ch in mesh:
+                if _xml_local(ch.tag) == "vertices":
+                    verts = np.array([[float(v.get("x")), float(v.get("y")), float(v.get("z"))] for v in ch], dtype=np.float64)
+                elif _xml_local(ch.tag) == "triangles":
+                    tris = np.array([[int(v.get("v1")), int(v.get("v2")), int(v.get("v3"))] for v in ch], dtype=np.int64)
+            if verts is not None and tris is not None and len(tris) and (tris.min() < 0 or tris.max() >= len(verts)):
+                fail("3MF: Dreieck verweist auf einen Eckpunkt, den es nicht gibt.")
+            parsed[oid] = (verts[tris] if verts is not None and tris is not None and len(tris) else None)
+        return parsed[oid]
+
     def tris_of(oid, M, depth=0):
         budget.visit()
         if depth > 8 or oid not in objects:
@@ -1289,18 +1323,10 @@ def read_3mf(data):
         _, mesh, comps = objects[oid]
         out = []
         if mesh is not None:
-            verts, tris = None, None
-            for ch in mesh:
-                if _xml_local(ch.tag) == "vertices":
-                    verts = np.array([[float(v.get("x")), float(v.get("y")), float(v.get("z"))] for v in ch], dtype=np.float64)
-                elif _xml_local(ch.tag) == "triangles":
-                    tris = np.array([[int(v.get("v1")), int(v.get("v2")), int(v.get("v3"))] for v in ch], dtype=np.int64)
-            if verts is None or tris is None or not len(tris):
+            P = mesh_arrays(oid, mesh)
+            if P is None:
                 return out
-            if tris.min() < 0 or tris.max() >= len(verts):
-                fail("3MF: Dreieck verweist auf einen Eckpunkt, den es nicht gibt.")
-            budget.triangles(len(tris))
-            P = verts[tris]
+            budget.triangles(len(P))
             if M is not None:
                 P = (np.concatenate([P.reshape(-1, 3), np.ones((P.size // 3, 1))], axis=1) @ M)[:, :3].reshape(-1, 3, 3)
             out.append(P)
@@ -1371,6 +1397,7 @@ def read_glb(data):
     res = []
 
     budget = _ReadBudget("GLB")
+    prim_cache = {}
 
     def walk(ni, parent, depth=0):
         budget.visit()
@@ -1387,15 +1414,18 @@ def read_glb(data):
                     fail("GLB: Dreiecksstreifen und -faecher (Modus %d) werden nicht unterstuetzt." % mode)
                 if mode != 4:
                     continue                                    # Punkte und Linien haben keine Flaeche
-                Vv = accessor(pr["attributes"]["POSITION"]).astype(np.float64)
-                Ff = accessor(pr["indices"]).reshape(-1).astype(np.int64) if "indices" in pr else np.arange(len(Vv))
-                if len(Ff) % 3:
-                    fail("GLB: Indexliste nicht durch 3 teilbar.")
-                Ff = Ff.reshape(-1, 3)
-                if len(Ff) and (Ff.min() < 0 or Ff.max() >= len(Vv)):
-                    fail("GLB: Dreieck verweist auf einen Eckpunkt, den es nicht gibt.")
-                budget.triangles(len(Ff))
-                P = Vv[Ff]
+                key = (nd["mesh"], id(pr))
+                if key not in prim_cache:                        # Zugriff und Pruefung je Primitive nur einmal, nicht je Besuch
+                    Vv = accessor(pr["attributes"]["POSITION"]).astype(np.float64)
+                    Ff = accessor(pr["indices"]).reshape(-1).astype(np.int64) if "indices" in pr else np.arange(len(Vv))
+                    if len(Ff) % 3:
+                        fail("GLB: Indexliste nicht durch 3 teilbar.")
+                    Ff = Ff.reshape(-1, 3)
+                    if len(Ff) and (Ff.min() < 0 or Ff.max() >= len(Vv)):
+                        fail("GLB: Dreieck verweist auf einen Eckpunkt, den es nicht gibt.")
+                    prim_cache[key] = Vv[Ff]
+                budget.triangles(len(prim_cache[key]))
+                P = prim_cache[key]
                 P = (np.concatenate([P.reshape(-1, 3), np.ones((P.size // 3, 1))], axis=1) @ M.T)[:, :3].reshape(-1, 3, 3)
                 if np.linalg.det(M[:3, :3]) < 0:                # Spiegelung: glTF verlangt umgekehrten Umlaufsinn
                     P = P[:, [0, 2, 1]]
@@ -1540,12 +1570,13 @@ def read_ply(data):
             return [("", V[faces])]
         faces = faces.tolist()
     tris = []
+    work = _PolygonWork()
     for ids in faces:
         ids = [int(i) for i in ids]
         if ids and (min(ids) < 0 or max(ids) >= len(V)):
             fail("PLY: Flaeche verweist auf einen Eckpunkt, den es nicht gibt.")
         if len(ids) >= 3:                                            # Linien und Punkte sind keine Flaechen
-            tris.extend(_triangulate_polygon(V, ids))
+            tris.extend(_triangulate_polygon(V, ids, work))
     return [("", V[np.array(tris, dtype=np.int64).reshape(-1, 3)] if tris else np.zeros((0, 3, 3)))]
 
 
@@ -1585,9 +1616,13 @@ def load_mesh(path):
     ms = read_meshes(path)
     if len(ms) == 1:
         ms[0].name = Path(path).stem
-        return ms[0]
-    V, F = weld_triangles(np.concatenate([m.V[m.F] for m in ms]))
-    return Mesh(V, F, Path(path).stem)
+        mesh = ms[0]
+    else:
+        V, F = weld_triangles(np.concatenate([m.V[m.F] for m in ms]))
+        mesh = Mesh(V, F, Path(path).stem)
+    if len(mesh.F) == 0:
+        fail("%s enthaelt keine Dreiecke." % Path(path).name)
+    return mesh
 
 
 # ============================================================================= Dateiformate: Schreiben
@@ -1802,6 +1837,13 @@ def rmtree_force(folder):
 
 
 JOURNAL = "journal.json"
+MARKER = ".meshcut-staging"                                     # steht in jedem Zwischenordner von meshcut: nur solche raeumt meshcut ab
+
+
+def new_staging(parent):
+    d = Path(tempfile.mkdtemp(prefix=".meshcut_", dir=parent))
+    (d / MARKER).write_text("meshcut", encoding="utf-8")
+    return d
 IN_BROWSER = sys.platform in ("emscripten", "wasi")           # Pyodide
 
 
@@ -1842,14 +1884,17 @@ def recover_outdir(out, min_age=0.0):
     gehoeren vielleicht einem Lauf, der gerade schreibt - lesende Befehle lassen sie in Ruhe."""
     out = Path(out)
     try:
-        leftovers = [d for d in out.iterdir() if d.name.startswith(".meshcut_") and d.is_dir()]
-        leftovers = [d for d in leftovers if time.time() - d.stat().st_mtime >= min_age]
+        leftovers = [d for d in out.iterdir() if d.name.startswith(".meshcut_") and d.is_dir() and not link_like(d)]
+        leftovers = [d for d in leftovers if time.time() - d.stat().st_mtime >= min_age and ((d / MARKER).is_file() or (d / JOURNAL).is_file())]
     except OSError:
         return
     entries = [d for d in leftovers if (d / JOURNAL).is_file()]
     for d in leftovers:
         if d not in entries:                                         # Zwischenordner eines abgebrochenen Laufs, noch nichts installiert
-            rmtree_force(d)
+            try:
+                rmtree_force(d)
+            except OSError as e:
+                print("Hinweis: Aufraeumen von %s nicht moeglich (%s)." % (d, e), file=sys.stderr)
     for aside in entries:
         try:
             j = json.loads((aside / JOURNAL).read_text(encoding="utf-8"))
@@ -1880,7 +1925,7 @@ def publish_files(staging, names, out):
     Fehler zurueck - entweder liegt der ganze neue Satz da oder der ganze alte. Ein Journal im Seitenordner macht das auch nach
     hartem Abbruch rueckgaengig (recover_outdir)."""
     out = Path(out)
-    aside = Path(tempfile.mkdtemp(prefix=".meshcut_", dir=out))
+    aside = new_staging(out)
     installed = []
     moved = {i: n for i, n in enumerate(names) if (out / n).exists()}
     try:
@@ -1959,7 +2004,7 @@ def write_split(res, outdir, fmt, inputs=()):
     stats = mesh_stats(res.source.V, res.source.F)
     side = make_sidecar(res, fmt, stats, files)
     out = Path(outdir)
-    staging = Path(tempfile.mkdtemp(prefix=".meshcut_", dir=out))
+    staging = new_staging(out)
     try:
         if fmt in MULTI_NAME:
             objs = [((res.names or {}).get(p.id) or "part_%d" % p.id, p.V, p.F) for p in res.parts]
@@ -1991,7 +2036,7 @@ def save_atomic(data, path):
         fail("%s ist schreibgeschuetzt." % path)
     if not path.resolve().parent.is_dir():
         fail("Der Ordner fuer %s existiert nicht." % path)
-    d = Path(tempfile.mkdtemp(prefix=".meshcut_", dir=path.resolve().parent))
+    d = new_staging(path.resolve().parent)
     try:
         write_durable(d / path.name, data)
         os.replace(d / path.name, path.resolve())
@@ -2146,7 +2191,8 @@ def verify_folder(folder, source=None):
         add("quelle-reihenfolge", sequence_hash(src_mesh.V, src_mesh.F, prec) == side["source"]["order_hash"],
             "Dreiecksreihenfolge der Quelldatei stimmt mit der Begleitdatei ueberein")
         naive = join_plain([Mesh(V, F) for _, V, F in parts]) if side["mode"] != "labels" else joined
-        hd, sampled = hausdorff_vertices(src_mesh.V, src_mesh.F, naive.V, naive.F)
+        sF = src_mesh.F[_face_areas(src_mesh.V, src_mesh.F) > 0]          # flaechenlose Dreiecke tragen keine Flaeche bei und fehlen auch im Naeherungs-Zusammensetzen
+        hd, sampled = hausdorff_vertices(src_mesh.V, sF, naive.V, naive.F)
         mag = float(np.abs(src_mesh.V).max()) if len(src_mesh.V) else 0.0
         tol = (1e-9 if prec == "float64" else 1e-6) * max(diag, 1e-300) + (8 * np.finfo(np.float32).eps * mag if prec == "float32" else 0.0)
         add("hausdorff", hd <= tol, "Hausdorff (Eckpunkte, ohne Begleitdatei zusammengesetzt) %.3g, erlaubt %.3g%s" % (hd, tol, " (Stichprobe)" if sampled else ""))
@@ -2289,6 +2335,8 @@ def cmd_join(a):
         if a.require_sidecar:
             fail("--require-sidecar: ohne %s-Ordner nicht moeglich." % SIDECAR)
         mesh = join_plain(meshes)
+        if len(mesh.F) == 0:
+            fail("Die Eingabedateien enthalten keine Dreiecke.")
         say("Ohne %s zusammengesetzt (Naeherung: Deckelpaare entfernt, Dreiecke bleiben fein): %d Dreiecke." % (SIDECAR, len(mesh.F)))
     refuse = [x.resolve() for x in inputs if x.is_file()]
     if outp.resolve() in refuse or (outp.exists() and any(x.is_file() and os.path.samefile(x, outp) for x in inputs)):

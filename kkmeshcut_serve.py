@@ -20,6 +20,7 @@ import kkmeshcut as mc
 from kkmeshcut import MeshcutError
 
 MAX_BODY = 1 << 20
+NL = chr(10)
 LOCK = threading.Lock()                                       # ein Werkzeug zur Zeit: die Werkzeuge schreiben auf die Platte
 MCP_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 
@@ -183,7 +184,16 @@ def mcp_handle(tools, msg):
 
 def serve_mcp(tools, stdin=None, stdout=None):
     stdin, stdout = stdin or sys.stdin, stdout or sys.stdout
-    for line in stdin:
+    while True:
+        line = stdin.readline(MAX_BODY + 1)
+        if not line:
+            break
+        if len(line) > MAX_BODY and not line.endswith(NL):          # zu lange Zeile: Rest bis zum Zeilenende verwerfen
+            while line and not line.endswith(NL):
+                line = stdin.readline(MAX_BODY)
+            stdout.write(json.dumps(_mcp_reply(None, error={"code": -32600, "message": "Zeile zu lang (hoechstens %d Byte)" % MAX_BODY})) + NL)
+            stdout.flush()
+            continue
         line = line.strip()
         if not line:
             continue
@@ -222,7 +232,8 @@ def make_handler(tools, token, timeout=30):
         def _authorized(self):
             if not token:
                 # ohne Schluessel nur lokal - und nur mit Host-Kopf localhost: schuetzt vor DNS-Rebinding aus dem Browser
-                host = self.headers.get("Host", "").rsplit(":", 1)[0].strip("[]").lower()
+                host = self.headers.get("Host", "").strip().lower()
+                host = host[1:host.find("]")] if host.startswith("[") and "]" in host else host.rsplit(":", 1)[0] if host.count(":") == 1 else host
                 return host in ("127.0.0.1", "localhost", "::1")
             got = self.headers.get("Authorization", "")
             return got.startswith("Bearer ") and hmac.compare_digest(got[7:].encode(), token.encode())
