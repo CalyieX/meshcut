@@ -328,6 +328,14 @@ def parse_sizes(text):
     return vals
 
 
+def check_cell_count(counts):
+    cells = 1
+    for c in counts:
+        cells *= int(c)
+    if cells > MAX_PARTS:
+        fail("Das ergibt %d Zellen - mehr als %d Teile sind nicht erlaubt." % (cells, MAX_PARTS))
+
+
 def grid_planes(lo, hi, counts):
     """Gitter ueber den Begrenzungsquader: counts=(nx,ny,nz) Zellen. Ebenen aufsteigend je Achse, Gewicht = Zellenschritt."""
     planes = []
@@ -612,6 +620,7 @@ def cap_triangles(edges, P3, normal, flip):
     v = np.cross(n, u)
     verts = sorted({x for e in edges for x in e})
     X = P3[verts]
+    X = X - X.mean(axis=0)                  # um den Schwerpunkt rechnen: weit vom Ursprung loescht sich sonst die Flaeche aus
     sx = -1.0 if flip else 1.0
     P = {vid: (float(sx * (X[k] @ u)), float(X[k] @ v)) for k, vid in enumerate(verts)}
     rev = [(b, a) for a, b in edges]
@@ -681,12 +690,40 @@ def _settle_flat_faces(F, flat_idx, bit, crossing, label):
         bit[i] = 1
 
 
+def _alias_flat_edges(V, Fc, Sc, emap, nV):
+    """Flache Dreiecke (a,b,c mit b auf der Strecke a-c) entstehen als Fuellstuecke zwischen Deckel und Schnittkante. Schneidet die
+    Ebene die lange Kante a-c, so liegt der Schnittpunkt auf a-b oder b-c - dort gibt es ihn schon (die Nachbarn teilen diese
+    Kanten). Ohne diese Verknuepfung entstuenden zwei Eckpunkte an derselben Stelle."""
+    e = np.stack([V[Fc[:, 1]] - V[Fc[:, 0]], V[Fc[:, 2]] - V[Fc[:, 1]], V[Fc[:, 0]] - V[Fc[:, 2]]], axis=1)       # Kanten 0-1, 1-2, 2-0
+    ln = np.linalg.norm(e, axis=2)
+    area2 = np.linalg.norm(np.cross(e[:, 0], -e[:, 2]), axis=1)
+    longest = ln.max(axis=1)
+    flat = area2 <= 1e-9 * longest ** 2
+    for r in np.nonzero(flat)[0].tolist():
+        m = int(np.argmax(ln[r]))                                # lange Kante: Ecke m -> m+1, gegenueber liegt b
+        ia, ib, ic = Fc[r, m], Fc[r, (m + 1) % 3], Fc[r, (m + 2) % 3]
+        a, c, b = int(ia), int(ib), int(ic)
+        sa, sc, sb = int(Sc[r, m]), int(Sc[r, (m + 1) % 3]), int(Sc[r, (m + 2) % 3])
+        key = min(a, c) * nV + max(a, c)
+        if key not in emap:
+            continue
+        if sa * sb < 0:
+            emap[key] = emap[min(a, b) * nV + max(a, b)]
+        elif sb * sc < 0:
+            emap[key] = emap[min(b, c) * nV + max(b, c)]
+        elif sb == 0:
+            emap[key] = b
+
+
 def _cut_once(st, plane, cap, report, snap):
     V, F = st.V, st.F
     s = plane.signed(V)
     sg = np.sign(s).astype(np.int8)
     if snap > 0:                                                # Rundungsrauschen (z. B. cos(90 Grad)) gilt als 'auf der Ebene'
-        sg[np.abs(s) <= snap * (float(np.abs(V).max()) + abs(plane.d) + 1e-300)] = 0
+        extent = float((V.max(axis=0) - V.min(axis=0)).max())
+        mag = float(np.abs(V).max()) + abs(plane.d)
+        # relativ zur Groesse des Netzes (nicht zur Entfernung vom Ursprung) + die Rechenungenauigkeit der Koordinaten selbst
+        sg[np.abs(s) <= snap * extent + 8 * np.finfo(np.float64).eps * mag * (snap > 0) + 1e-300] = 0
     S = sg[F]
     zero_all = (S == 0).all(axis=1)
     ge = (S >= 0).all(axis=1)
@@ -722,6 +759,7 @@ def _cut_once(st, plane, cap, report, snap):
         t = s[klo] / (s[klo] - s[khi])                          # Endpunkte sortiert: beide Seiten rechnen dasselbe
         newV = V[klo] + t[:, None] * (V[khi] - V[klo])
         emap = {int(k): nV + i for i, k in enumerate(keys.tolist())}
+        _alias_flat_edges(V, Fc, Sc, emap, nV)
     V2 = np.concatenate([V, newV]) if len(newV) else V
     onp = np.concatenate([sg == 0, np.ones(len(newV), bool)])
 
@@ -745,6 +783,8 @@ def _cut_once(st, plane, cap, report, snap):
             r0 = poly.index(min(poly))                          # Faecher von der kleinsten Eckpunktnummer: gespiegelte Deckel
             poly = poly[r0:] + poly[:r0]                        # zerfallen so in dieselben Dreiecke (Join ohne Begleitdatei)
             for q in range(1, len(poly) - 1):
+                if poly[0] == poly[q] or poly[q] == poly[q + 1] or poly[0] == poly[q + 1]:
+                    continue                                   # Dreieck mit doppeltem Eckpunkt: keine Flaeche, keine Kante
                 frag_f.append((poly[0], poly[q], poly[q + 1]))
                 frag_bit.append(bt)
                 frag_src.append(sr)
@@ -1057,7 +1097,7 @@ def read_stl(data):
     text = data.decode("utf-8", errors="replace")
     if not text.lstrip().lower().startswith("solid") or "facet" not in text.lower():
         fail("Keine gueltige STL-Datei (weder binaer noch ASCII).")
-    vals = re.findall(r"vertex\s+([-+0-9.eE]+)\s+([-+0-9.eE]+)\s+([-+0-9.eE]+)", text)
+    vals = re.findall(r"vertex\s+([-+0-9.eE]+)\s+([-+0-9.eE]+)\s+([-+0-9.eE]+)", text, re.IGNORECASE)
     if len(vals) % 3:
         fail("STL-Datei ist abgeschnitten (Eckpunkte nicht durch 3 teilbar).")
     try:
@@ -1067,37 +1107,76 @@ def read_stl(data):
     return [("", arr)]
 
 
+def _triangulate_polygon(Vs, ids):
+    """Polygon (Eckpunktnummern `ids` in Vs) in Dreiecke. Konvex: Faecher; konkav: Ohrenschnitt in der Polygonebene."""
+    k = len(ids)
+    if k == 3:
+        return [(ids[0], ids[1], ids[2])]
+    X = np.array([Vs[i] for i in ids], dtype=np.float64)
+    X = X - X.mean(axis=0)
+    nrm = np.zeros(3)
+    for a in range(k):
+        b = (a + 1) % k
+        nrm += np.cross(X[a], X[b])
+    ln = float(np.linalg.norm(nrm))
+    fan = [(ids[0], ids[q], ids[q + 1]) for q in range(1, k - 1)]
+    if ln == 0 or not math.isfinite(ln):
+        return fan
+    n = nrm / ln
+    ref = np.zeros(3)
+    ref[int(np.argmin(np.abs(n)))] = 1.0
+    u = np.cross(n, ref)
+    u /= np.linalg.norm(u)
+    v = np.cross(n, u)
+    P2 = [(float(x @ u), float(x @ v)) for x in X]
+    cr = [_cross(P2, a, (a + 1) % k, (a + 2) % k) for a in range(k)]
+    if min(cr) >= 0:                                            # konvex: Faecher genuegt
+        return fan
+    try:
+        tris, emerg = ear_clip(dict(enumerate(P2)), list(range(k)))
+    except MeshcutError:
+        return fan
+    if emerg or len(tris) != k - 2:
+        return fan
+    return [(ids[a], ids[b], ids[c]) for a, b, c in tris]
+
+
 def read_obj(data):
     V = []
     objs = [("", [])]
     for ln in data.decode("utf-8", errors="replace").splitlines():
-        if ln.startswith("v "):
-            q = ln.split()
+        q = ln.split()
+        if not q:
+            continue
+        tag = q[0]
+        if tag == "v":
             try:
                 V.append((float(q[1]), float(q[2]), float(q[3])))
             except (IndexError, ValueError):
-                fail("OBJ: unlesbare Zeile '%s'" % ln[:40])
-        elif ln.startswith("o "):
-            objs.append((ln[2:].strip(), []))
-        elif ln.startswith("f "):
+                fail("OBJ: unlesbare Zeile '%s'" % ln.strip()[:40])
+        elif tag == "o":
+            objs.append((ln.strip()[1:].strip(), []))
+        elif tag == "f":
             ids = []
-            for tok in ln.split()[1:]:
+            for tok in q[1:]:
                 try:
                     k = int(tok.split("/")[0])
                 except ValueError:
-                    fail("OBJ: unlesbare Flaeche '%s'" % ln[:40])
+                    fail("OBJ: unlesbare Flaeche '%s'" % ln.strip()[:40])
                 ids.append(k - 1 if k > 0 else len(V) + k)
             if len(ids) < 3:
                 fail("OBJ: Flaeche mit weniger als 3 Ecken.")
             if min(ids) < 0 or max(ids) >= len(V):
                 fail("OBJ: Flaeche verweist auf einen Eckpunkt, den es nicht gibt.")
-            for q in range(1, len(ids) - 1):
-                objs[-1][1].append((ids[0], ids[q], ids[q + 1]))
+            objs[-1][1].extend(_triangulate_polygon(V, ids))
     Va = np.array(V, dtype=np.float64).reshape(-1, 3)
     res = [(n, Va[np.array(f, dtype=np.int64).reshape(-1, 3)]) for n, f in objs if f]
     if not res:
         fail("OBJ ohne Flaechen.")
     return res
+
+
+THREEMF_UNITS = {"micron": 1e-3, "millimeter": 1.0, "centimeter": 10.0, "inch": 25.4, "foot": 304.8, "meter": 1000.0}
 
 
 def _xml_local(tag):
@@ -1115,6 +1194,10 @@ def read_3mf(data):
         root = ET.fromstring(z.read(next((n for n in names if n.lower() == "3d/3dmodel.model"), names[0])))
     except zipfile.BadZipFile:
         fail("Keine gueltige 3MF-Datei (kein ZIP).")
+    unit = (root.get("unit") or "millimeter").lower()
+    if unit not in THREEMF_UNITS:
+        fail("3MF: Einheit '%s' unbekannt." % unit)
+    scale = THREEMF_UNITS[unit]
     objects = {}
     items = []
     for el in root.iter():
@@ -1173,7 +1256,8 @@ def read_3mf(data):
     for oid, tr in todo:
         arrs = tris_of(oid, mat(tr))
         if arrs:
-            res.append((objects[oid][0], np.concatenate(arrs)))
+            allp = np.concatenate(arrs)
+            res.append((objects[oid][0], allp * scale if scale != 1.0 else allp))      # alles in Millimeter
     if not res:
         fail("3MF ohne Dreiecke.")
     return res
@@ -1236,8 +1320,11 @@ def read_glb(data):
             mesh = js["meshes"][nd["mesh"]]
             tris = []
             for pr in mesh["primitives"]:
-                if pr.get("mode", 4) != 4:
-                    continue
+                mode = pr.get("mode", 4)
+                if mode in (5, 6):
+                    fail("GLB: Dreiecksstreifen und -faecher (Modus %d) werden nicht unterstuetzt." % mode)
+                if mode != 4:
+                    continue                                    # Punkte und Linien haben keine Flaeche
                 Vv = accessor(pr["attributes"]["POSITION"]).astype(np.float64)
                 Ff = accessor(pr["indices"]).reshape(-1).astype(np.int64) if "indices" in pr else np.arange(len(Vv))
                 if len(Ff) % 3:
@@ -1247,6 +1334,8 @@ def read_glb(data):
                     fail("GLB: Dreieck verweist auf einen Eckpunkt, den es nicht gibt.")
                 P = Vv[Ff]
                 P = (np.concatenate([P.reshape(-1, 3), np.ones((P.size // 3, 1))], axis=1) @ M.T)[:, :3].reshape(-1, 3, 3)
+                if np.linalg.det(M[:3, :3]) < 0:                # Spiegelung: glTF verlangt umgekehrten Umlaufsinn
+                    P = P[:, [0, 2, 1]]
                 tris.append(P)
             if tris:
                 res.append((nd.get("name") or mesh.get("name") or "mesh_%d" % nd["mesh"], np.concatenate(tris)))
@@ -1277,8 +1366,8 @@ def read_meshes(path):
         objs = reader(data)
     except MeshcutError:
         raise
-    except (ValueError, KeyError, IndexError, TypeError, struct.error, json.JSONDecodeError) as e:
-        fail("%s ist keine lesbare %s-Datei (%s)." % (path, fmt.upper(), e))
+    except Exception as e:
+        fail("%s ist keine lesbare %s-Datei (%s)." % (path, fmt.upper(), (str(e).strip().splitlines() or [type(e).__name__])[0]))
     out = []
     for name, P in objs:
         P = np.asarray(P, dtype=np.float64).reshape(-1, 3, 3)
@@ -1393,10 +1482,23 @@ def enc_array(a):
     return {"dtype": a.dtype.str, "shape": list(a.shape), "b64": base64.b64encode(zlib.compress(a.tobytes(), 6)).decode("ascii")}
 
 
+MAX_ARRAY_BYTES = 1 << 28                                       # 256 MiB: mehr darf eine Begleitdatei nicht entpacken
+
+
 def dec_array(d):
     try:
-        raw = zlib.decompress(base64.b64decode(d["b64"]))
-        return np.frombuffer(raw, dtype=np.dtype(d["dtype"])).reshape(d["shape"]).copy()
+        dt = np.dtype(d["dtype"])
+        shape = [int(x) for x in d["shape"]]
+        if dt.str not in ("<i8", "<f8") or any(x < 0 for x in shape):
+            raise ValueError("dtype")
+        want = dt.itemsize * int(np.prod(shape, dtype=np.float64))
+        if want > MAX_ARRAY_BYTES:
+            raise ValueError("zu gross")
+        zo = zlib.decompressobj()
+        raw = zo.decompress(base64.b64decode(d["b64"]), want + 1)             # hoechstens so viel, wie die Form verspricht
+        if len(raw) != want or zo.unconsumed_tail:
+            raise ValueError("Laenge")
+        return np.frombuffer(raw, dtype=dt).reshape(shape).copy()
     except Exception:
         fail("Die Begleitdatei %s ist beschaedigt." % SIDECAR)
 
@@ -1413,7 +1515,8 @@ def check_sidecar(side):
     ids = []
     for p in side["parts"]:
         if not (isinstance(p, dict) and isinstance(p.get("id"), int) and isinstance(p.get("file"), str)
-                and isinstance(p.get("faces"), int) and isinstance(p.get("cap_faces"), int) and "src" in p):
+                and isinstance(p.get("faces"), int) and isinstance(p.get("cap_faces"), int) and "src" in p
+                and isinstance(p.get("hash"), str)):
             raise ValueError("Teileintrag")
         ids.append(p["id"])
         names.append(p["file"])
@@ -1433,6 +1536,8 @@ def check_sidecar(side):
 
 
 def load_sidecar(folder):
+    if Path(folder).is_dir() and not link_like(folder):
+        recover_outdir(folder)
     p = Path(folder) / SIDECAR
     if not p.is_file():
         return None
@@ -1455,7 +1560,7 @@ def make_sidecar(res, fmt, stats, files):
             "planes": [p.to_json() for p in res.planes],
             "split_ids": enc_array(res.split_ids.astype(np.int64)), "split_coords": enc_array(res.split_coords.astype(np.float64)),
             "parts": [{"id": p.id, "file": files[i][0], "object": files[i][1], "faces": int(len(p.F)), "cap_faces": p.n_cap,
-                       "src": enc_array(p.src.astype(np.int64))} for i, p in enumerate(res.parts)]}
+                       "hash": triangle_hash(p.V, p.F, precision), "src": enc_array(p.src.astype(np.int64))} for i, p in enumerate(res.parts)]}
 
 
 # ============================================================================= Sicher schreiben
@@ -1474,19 +1579,59 @@ def rmtree_force(folder):
     shutil.rmtree(folder)
 
 
+JOURNAL = "journal.json"
+
+
+def _write_journal(aside, state, names, moved):
+    tmp = aside / (JOURNAL + ".tmp")
+    tmp.write_text(json.dumps({"state": state, "names": names, "moved": moved}), encoding="utf-8")
+    os.replace(tmp, aside / JOURNAL)
+
+
+def recover_outdir(out):
+    """Raeumt nach einem harten Abbruch (Stromausfall, kill -9) mitten im Ersetzen auf: war das Ersetzen noch nicht fertig,
+    kommt der ganze alte Satz zurueck; war es fertig, wird nur der Rest weggeraeumt."""
+    out = Path(out)
+    try:
+        entries = [d for d in out.iterdir() if d.name.startswith(".meshcut_") and d.is_dir() and (d / JOURNAL).is_file()]
+    except OSError:
+        return
+    for aside in entries:
+        try:
+            j = json.loads((aside / JOURNAL).read_text(encoding="utf-8"))
+            names, moved = j["names"], {int(k): v for k, v in j["moved"].items()}
+            if j["state"] != "done":
+                fresh = [n for n in names if n not in moved.values()]            # Namen ohne Vorgaenger: nur neu installiert
+                for n in fresh:
+                    if (out / n).is_file():
+                        (out / n).unlink()
+                for i, n in moved.items():
+                    if (aside / str(i)).exists():                                # Original liegt zur Seite -> dort ist nur Neues
+                        if (out / n).is_file():
+                            (out / n).unlink()
+                        os.replace(aside / str(i), out / n)
+            rmtree_force(aside)
+            print("Hinweis: ein frueherer, abgebrochener Lauf in %s wurde %s." % (out, "abgeschlossen" if j["state"] == "done" else "zurueckgerollt (der alte Satz ist wieder da)"), file=sys.stderr)
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            print("Hinweis: Aufraeumen von %s nicht moeglich (%s)." % (aside, e), file=sys.stderr)
+
+
 def publish_files(staging, names, out):
     """Fertige Dateien aus `staging` nach `out` bringen. Bereits vorhandene Ziele wandern erst zur Seite und kommen bei jedem
-    Fehler zurueck - entweder liegt der ganze neue Satz da oder der ganze alte."""
+    Fehler zurueck - entweder liegt der ganze neue Satz da oder der ganze alte. Ein Journal im Seitenordner macht das auch nach
+    hartem Abbruch rueckgaengig (recover_outdir)."""
     out = Path(out)
     aside = Path(tempfile.mkdtemp(prefix=".meshcut_", dir=out))
     installed = []
+    moved = {i: n for i, n in enumerate(names) if (out / n).exists()}
     try:
-        for i, n in enumerate(names):
-            if (out / n).exists():
-                os.replace(out / n, aside / str(i))
+        _write_journal(aside, "moving", names, moved)
+        for i, n in moved.items():
+            os.replace(out / n, aside / str(i))
         for n in names:
             installed.append(n)
             os.replace(Path(staging) / n, out / n)
+        _write_journal(aside, "done", names, moved)
     except BaseException:
         stuck = []
         for n in installed:
@@ -1495,6 +1640,8 @@ def publish_files(staging, names, out):
             except OSError as e:
                 stuck.append("%s (%s)" % (n, e))
         for f in list(aside.iterdir()):
+            if not f.name.isdigit():
+                continue
             try:
                 os.replace(f, out / names[int(f.name)])
             except OSError as e:
@@ -1515,6 +1662,7 @@ def prepare_outdir(out, new_names, inputs):
         if not out.resolve().parent.is_dir():
             fail("Der Ordner fuer %s existiert nicht." % out)
         out.mkdir()
+    recover_outdir(out)
     owned = set()
     old = out / SIDECAR
     if old.exists():
@@ -1618,8 +1766,8 @@ def read_meshes_bytes(fmt, data, label):
         objs = reader(data)
     except MeshcutError:
         raise
-    except (ValueError, KeyError, IndexError, TypeError, struct.error, json.JSONDecodeError) as e:
-        fail("%s ist keine lesbare %s-Datei (%s)." % (label, fmt.upper(), e))
+    except Exception as e:
+        fail("%s ist keine lesbare %s-Datei (%s)." % (label, fmt.upper(), (str(e).strip().splitlines() or [type(e).__name__])[0]))
     res = []
     for name, P in objs:
         P = np.asarray(P, dtype=np.float64).reshape(-1, 3, 3)
@@ -1635,6 +1783,40 @@ def tolerances(precision):
     return (1e-4, 1e-4) if precision == "float32" else (1e-9, 1e-9)
 
 
+def _check_cap_planes(side, parts, prec):
+    """Jedes Deckel-Dreieck muss mit allen drei Ecken auf einer der gespeicherten Schnittebenen liegen."""
+    try:
+        planes = [(np.array(p["normal"], dtype=np.float64), float(p["offset"])) for p in side["planes"]]
+        if not planes or any(n.shape != (3,) or not np.isfinite(n).all() or not math.isfinite(d) for n, d in planes):
+            raise ValueError
+    except (KeyError, TypeError, ValueError):
+        return False, "die Schnittebenen in %s sind unbrauchbar" % SIDECAR
+    allv = np.concatenate([V for _, V, _ in parts])
+    extent = float((allv.max(axis=0) - allv.min(axis=0)).max()) if len(allv) else 0.0
+    mag = float(np.abs(allv).max()) if len(allv) else 0.0
+    eps = np.finfo(np.float32 if prec == "float32" else np.float64).eps
+    tol = (1e-9 if prec == "float64" else 1e-6) * extent + 16 * eps * (mag + max(abs(d) for _, d in planes))
+    worst = 0.0
+    n_bad = 0
+    for meta, (_, V, F) in zip(side["parts"], parts):
+        nonc = len(F) - meta["cap_faces"]
+        if nonc == len(F):
+            continue
+        T = V[F[nonc:]]                                                    # (k, 3, 3)
+        ok_any = np.zeros(len(T), bool)
+        best = np.full(len(T), np.inf)
+        for n, d in planes:
+            dist = np.abs(T @ n - d).max(axis=1)
+            ok_any |= dist <= tol
+            best = np.minimum(best, dist)
+        n_bad += int((~ok_any).sum())
+        if len(best):
+            worst = max(worst, float(best.max()))
+    if n_bad:
+        return False, "%d Deckel-Dreiecke liegen nicht auf einer Schnittebene (groesster Abstand %.3g, erlaubt %.3g)" % (n_bad, worst, tol)
+    return True, "alle Deckel-Dreiecke liegen auf den Schnittebenen (groesster Abstand %.3g, erlaubt %.3g)" % (worst, tol)
+
+
 def verify_folder(folder, source=None):
     """Rundlauf pruefen. Rueckgabe: dict mit `ok` und Einzelpruefungen (Liste von (name, ok, text))."""
     side, parts = load_parts(folder)
@@ -1644,6 +1826,16 @@ def verify_folder(folder, source=None):
     def add(name, ok, text):
         checks.append((name, bool(ok), text))
     rel_v, rel_a = tolerances(prec)
+    # 0. die Teile selbst: jede Datei muss genau das enthalten, was split geschrieben hat (Fragmente und Deckel eingeschlossen)
+    bad = []
+    for meta, (pid, V, F) in zip(side["parts"], parts):
+        if triangle_hash(V, F, prec) != meta["hash"]:
+            bad.append(pid)
+    add("teile", not bad, "alle %d Teile unveraendert (Hash je Teil)" % len(parts) if not bad
+        else "Teil %s weicht von dem ab, was split geschrieben hat - die Datei wurde veraendert" % ", ".join(str(b) for b in bad))
+    # 0b. die Deckel muessen auf den Schnittebenen liegen
+    if side["mode"] != "labels" and any(m["cap_faces"] for m in side["parts"]):
+        add("ebenen", *_check_cap_planes(side, parts, prec))
     # 1. Rundlauf ueber die Begleitdatei
     joined = join_with_sidecar(parts, side)
     jh = triangle_hash(joined.V, joined.F, prec)
@@ -1685,7 +1877,8 @@ def verify_folder(folder, source=None):
         add("quelle", sh == side["source"]["hash"], "Quelldatei %s... %s Hash in der Begleitdatei" % (sh[:12], "=" if sh == side["source"]["hash"] else "!="))
         naive = join_plain([Mesh(V, F) for _, V, F in parts]) if side["mode"] != "labels" else joined
         hd, sampled = hausdorff_vertices(src_mesh.V, src_mesh.F, naive.V, naive.F)
-        tol = (1e-9 if prec == "float64" else 1e-6) * max(diag, 1e-300)
+        mag = float(np.abs(src_mesh.V).max()) if len(src_mesh.V) else 0.0
+        tol = (1e-9 if prec == "float64" else 1e-6) * max(diag, 1e-300) + (8 * np.finfo(np.float32).eps * mag if prec == "float32" else 0.0)
         add("hausdorff", hd <= tol, "Hausdorff (Eckpunkte, ohne Begleitdatei zusammengesetzt) %.3g, erlaubt %.3g%s" % (hd, tol, " (Stichprobe)" if sampled else ""))
     return {"ok": all(c[1] for c in checks), "checks": checks, "source_hash": side["source"]["hash"], "joined_hash": jh}
 
@@ -1749,6 +1942,7 @@ def cmd_split(a):
                 planes.append(p)
         elif a.grid:
             counts = parse_counts(a.grid, "--grid")
+            check_cell_count(counts)
             planes = grid_planes(lo, hi, counts)
             if not planes:
                 fail("--grid %s ergibt nur eine Zelle." % a.grid)
@@ -1756,6 +1950,7 @@ def cmd_split(a):
             sizes = parse_sizes(a.max)
             ext = hi - lo
             counts = [max(1, math.ceil(ext[i] / sizes[i])) if math.isfinite(sizes[i]) else 1 for i in range(3)]
+            check_cell_count(counts)
             planes = grid_planes(lo, hi, counts)
             if not planes:
                 fail("Das Netz passt schon in %s - nichts zu schneiden." % a.max)
@@ -1777,7 +1972,11 @@ def cmd_split(a):
             planes, table = wedge_planes(cen, ax, a.wedges)
         if not (math.isfinite(a.snap) and 0 <= a.snap < 1e-3):
             fail("--snap: Zahl zwischen 0 und 0.001 noetig.")
-        res = split_planes(mesh, planes, cap=cap, table=table, mode="wedges" if a.wedges else "plane", snap=a.snap)
+        res = split_planes(mesh, planes, cap=cap, table=table, mode="wedges" if a.wedges else ("grid" if (a.grid or a.max) else "plane"), snap=a.snap)
+        for p in res.parts:
+            er = edge_report(p.F, len(p.V))
+            if cap and not er["watertight"]:
+                say("Hinweis: Teil %d ist nicht wasserdicht (%d offene, %d falsch orientierte Kanten) - die Ebene beruehrt das Netz vermutlich an einer Kante oder Flaeche." % (p.id, er["open"], er["bad"]))
         if res.report["cap_emergencies"]:
             say("Hinweis: %d Deckel-Dreiecke mussten im Notverfahren gebildet werden - bitte mit `verify` pruefen." % res.report["cap_emergencies"])
     side = write_split(res, a.outdir, a.format, inputs=[a.input])
@@ -1786,7 +1985,7 @@ def cmd_split(a):
         r = verify_folder(a.outdir, source=a.input)
         report_verify(r)
         if not r["ok"]:
-            fail("Pruefung fehlgeschlagen.")
+            fail("Pruefung fehlgeschlagen: %s." % ", ".join(c[0] for c in r["checks"] if not c[1]))
 
 
 def report_verify(r):
@@ -1800,6 +1999,11 @@ def cmd_join(a):
     fmt = detect_format(outp)
     if len(inputs) == 1 and inputs[0].is_dir():
         side, parts = load_parts(inputs[0])
+        guarded = set(check_sidecar(side)) | {SIDECAR}
+        if outp.exists() and any((inputs[0] / n).exists() and os.path.samefile(inputs[0] / n, outp) for n in guarded):
+            fail("%s gehoert zu den Teilen in %s - bitte ein anderes Ziel waehlen." % (outp, inputs[0]))
+        if os.path.normcase(str(outp.resolve().parent)) == os.path.normcase(str(inputs[0].resolve())) and os.path.normcase(outp.name) in {os.path.normcase(n) for n in guarded}:
+            fail("%s gehoert zu den Teilen in %s - bitte ein anderes Ziel waehlen." % (outp, inputs[0]))
         mesh = join_with_sidecar(parts, side)
         prec = side["source"]["precision"]
         h = triangle_hash(mesh.V, mesh.F, prec)
@@ -1817,7 +2021,7 @@ def cmd_join(a):
         mesh = join_plain(meshes)
         say("Ohne %s zusammengesetzt (Naeherung: Deckelpaare entfernt, Dreiecke bleiben fein): %d Dreiecke." % (SIDECAR, len(mesh.F)))
     refuse = [x.resolve() for x in inputs if x.is_file()]
-    if outp.resolve() in refuse:
+    if outp.resolve() in refuse or (outp.exists() and any(x.is_file() and os.path.samefile(x, outp) for x in inputs)):
         fail("%s ist auch Eingabe - bitte ein anderes Ziel waehlen." % outp)
     save_atomic(mesh_bytes(fmt, mesh.V, mesh.F, outp.stem), outp)
     say("%s geschrieben." % outp)
@@ -1827,7 +2031,7 @@ def cmd_verify(a):
     r = verify_folder(a.parts, source=a.source)
     report_verify(r)
     if not r["ok"]:
-        fail("Pruefung fehlgeschlagen.")
+        fail("Pruefung fehlgeschlagen: %s." % ", ".join(c[0] for c in r["checks"] if not c[1]))
     say("Alles in Ordnung.")
 
 
@@ -1948,13 +2152,18 @@ def main(argv=None):
 def _flags(opts):
     argv = []
     for key, val in opts.items():
+        if key in ("help", "h", "version"):
+            raise MeshcutError("Option '%s' gibt es in der Python-Schnittstelle nicht." % key)
         flag = "--" + key.replace("_", "-")
         if val is None or val is False:
             continue
         if val is True:
             argv.append(flag)
         elif isinstance(val, (list, tuple)) and key == "plane":
-            argv.extend("%s=%s" % (flag, v) for v in val)
+            if len(val) == 4 and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in val):
+                argv.append("%s=%s" % (flag, ",".join(repr(float(v)) for v in val)))        # eine Ebene a,b,c,d
+            else:
+                argv.extend("%s=%s" % (flag, v) for v in val)
         else:
             if isinstance(val, (list, tuple)):
                 val = ",".join(str(v) for v in val)
@@ -1987,7 +2196,10 @@ def split(input, outdir, **options):
     """Netz zerlegen (Optionen wie auf der Kommandozeile: plane, grid, max, wedges, axis, center, labels, format, no_cap, flip,
     verify). Rueckgabe: Inhalt von meshcut.json als dict."""
     _run("split", [input, outdir], options)
-    return json.loads((Path(outdir) / SIDECAR).read_text(encoding="utf-8"))
+    try:
+        return json.loads((Path(outdir) / SIDECAR).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise MeshcutError("%s liess sich nach dem Schreiben nicht lesen (%s)" % (SIDECAR, e)) from e
 
 
 def join(parts, output):
@@ -2014,8 +2226,17 @@ def verify(parts, source=None):
 
 def info(path):
     """Kennzahlen eines Netzes als dict."""
-    m = load_mesh(path)
-    return mesh_stats(m.V, m.F, "float32" if detect_format(path) in FLOAT32_FORMATS else "float64")
+    try:
+        m = load_mesh(path)
+        return mesh_stats(m.V, m.F, "float32" if detect_format(path) in FLOAT32_FORMATS else "float64")
+    except MeshcutError:
+        raise
+    except KeyboardInterrupt:
+        raise
+    except BaseException as e:
+        if isinstance(e, OSError) and oserror_message(e):
+            raise MeshcutError(oserror_message(e)) from e
+        raise MeshcutError((str(e).strip().splitlines() or [type(e).__name__])[0]) from e
 
 
 def labels(input, output, grid):

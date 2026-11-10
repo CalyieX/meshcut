@@ -84,7 +84,17 @@ Zwei Stufen, die man nicht vermischen darf:
 
 **Dateiformat und Genauigkeit.** STL und GLB speichern 32 Bit: der Hash wird dann nach Rundung auf float32 gebildet (steht in `meshcut.json` als `precision`). Wer **wirklich 64 Bit** will, nimmt `--format obj` oder `3mf` (Text mit 17 Stellen, ohne Verlust).
 
-**Rundlauf-Kriterien des Schnittmodus** (alle in `verify`): Volumen aller Teile = Volumen des Originals, Fläche ohne Deckel = Originalfläche, jedes Teil wasserdicht (jede Kante genau zweimal, gegenläufig), Euler-Zahl gerade, Hash gleich, Hausdorff-Abstand der ohne Begleitdatei zusammengesetzten Teile zur Quelle. Erlaubt sind 1e-9 relativ bei 64 Bit und 1e-4 bei 32 Bit.
+**Rundlauf-Kriterien des Schnittmodus** (alle in `verify`):
+- **Teile unverändert:** jede Teildatei hat denselben Hash wie beim Schreiben (Fragmente und Deckel eingeschlossen). Verschobene, beschädigte oder ausgetauschte Teile fallen sofort auf, auch ohne `--source`.
+- **Deckel auf den Schnittebenen:** jedes Deckel-Dreieck liegt mit allen drei Ecken auf einer der in `meshcut.json` gespeicherten Ebenen. Ein Schnitt an der falschen Stelle fällt auf.
+- Volumen aller Teile = Volumen des Originals, Fläche ohne Deckel = Originalfläche, jedes Teil wasserdicht (jede Kante genau zweimal, gegenläufig), Euler-Zahl gerade, Hash gleich.
+- Mit `--source`: Hash der Quelldatei und Hausdorff-Abstand der ohne Begleitdatei zusammengesetzten Teile. Bei großen Netzen prüft der Hausdorff-Abstand eine **Stichprobe** der Eckpunkte (steht dann im Text); die Sicherheit kommt aus den Hashes, der Hausdorff-Abstand ist eine zusätzliche, unabhängige Gegenprobe.
+
+Erlaubt sind 1e-9 relativ bei 64 Bit und 1e-4 bei 32 Bit; bei STL/GLB weit vom Ursprung kommt die float32-Rundung der Koordinaten dazu.
+
+**Einheiten.** 3MF-Dateien werden beim Einlesen nach Millimeter umgerechnet (`inch`, `centimeter`, `meter`, `micron`, `foot`); meshcut schreibt 3MF immer in Millimeter. Die Größe in der Welt bleibt gleich, nur die Zahlen ändern sich.
+
+**Abbruch beim Schreiben.** `split` ersetzt einen Ausgabeordner als Ganzes: Fehler und Ausnahmen rollen zurück, und auch nach einem harten Abbruch (Stromausfall, `kill -9`) legt ein Journal im versteckten `.meshcut_…`-Ordner fest, was passiert: Der nächste Aufruf von `split`, `join` oder `verify` auf diesen Ordner stellt den alten Satz wieder her (oder schließt ein fertiges Ersetzen ab) und meldet das auf stderr.
 
 ### Wie geschnitten wird
 
@@ -120,6 +130,9 @@ Die Schnittstelle führt dieselben Befehle aus wie die Kommandozeile (gleiche Op
 - **Stifte und Passungen** (Dübel, Zapfen/Loch mit Spiel) gibt es in v0.1 noch nicht. manifold3d wird nur in den Tests als unabhängige Gegenprobe benutzt (Volumen der Teile gegen `split_by_plane`), nicht zur Laufzeit.
 - **Triangulierung der Deckel** ist gültig und deckungsgleich, aber nicht „schön“: Ohrenschnitt erzeugt gern lange schmale Dreiecke. Für den Druck unkritisch, für Simulation ungeeignet. Läuft der Ohrenschnitt in einen Notfall (Punkte exakt aufeinander), meldet `split` das.
 - **Geschwindigkeit.** Der Kern ist numpy; die Deckel-Triangulierung ist Python. Rund 100 000 Dreiecke in unter einer Sekunde, Deckel mit mehreren tausend Randpunkten brauchen Sekunden.
+- **Ebene durch einen konkaven Eckpunkt oder eine Kante des Netzes:** berühren sich die Teile danach an einer Kante, ist ein Teil nicht wasserdicht. `split` meldet das („Teil … ist nicht wasserdicht“), `verify` ebenfalls.
+- **Sehr große Koordinaten.** Weit vom Ursprung (ab etwa dem 1e8-fachen der Netzgröße) geht in 64 Bit die Auflösung aus; in STL/GLB (32 Bit) schon ab etwa dem 1e5-fachen. Vorher das Netz in die Nähe des Ursprungs verschieben.
+- **Höchstens 1024 Teile** (`--grid`, `--max`): wird vor dem Schneiden geprüft.
 - Nichtmanifold-Eckpunkte, an denen sich zwei Teile nur in einem Punkt berühren, sind erlaubt; `verify` zählt sie für die Euler-Zahl getrennt.
 
 ## Entwicklung
@@ -130,6 +143,6 @@ python -m pytest -q tests
 MESHCUT_EXAMPLES=300 python -m pytest -q tests/test_property.py     # gründlicher
 ```
 
-Die Tests prüfen unter anderem: Zufallsebenen, Ebenen durch Eckpunkte/Kanten/Flächen (hypothesis), Dreiecke in der Ebene, Keile um eine Achse, Torus/Hohlkugel (Löcher und Inseln im Deckel), alle vier Formate, Absturz-Injektion beim Schreiben, Fremddateien im Ausgabeordner und den Vergleich mit trimesh und manifold3d. Die Browser-Version liegt als Kopie in `docs/kkmeshcut.py`; ein Test stellt sicher, dass beide Dateien gleich sind.
+Die Tests prüfen unter anderem (Befunde aus den Prüfrunden stehen in `tests/test_review.py`, auch der harte Abbruch mit `os._exit`): Zufallsebenen, Ebenen durch Eckpunkte/Kanten/Flächen (hypothesis), Dreiecke in der Ebene, Keile um eine Achse, Torus/Hohlkugel (Löcher und Inseln im Deckel), alle vier Formate, Absturz-Injektion beim Schreiben, Fremddateien im Ausgabeordner und den Vergleich mit trimesh und manifold3d. Die Browser-Version liegt als Kopie in `docs/kkmeshcut.py`; ein Test stellt sicher, dass beide Dateien gleich sind.
 
 Lizenz: MIT, © K&K AI.

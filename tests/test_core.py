@@ -101,16 +101,17 @@ def test_planes_through_vertices_edges_and_faces():
 
 
 def test_plane_in_a_ledge_with_coplanar_triangles():
-    """Stufe: die Ebene liegt in der Oberseite der unteren Platte, daneben steht ein Block darauf."""
-    plate = shapes.prism([(0, 0), (4, 0), (4, 2), (0, 2)], h=1.0)
-    tower = shapes.prism([(1, 0), (2, 0), (2, 2), (1, 2)], h=1.0)
-    P = np.concatenate([plate.V[plate.F], (tower.V + [0, 0, 1])[tower.F]])
-    # der Turm sitzt mit seiner Unterseite auf der Platte: die zwei Beruehrflaechen fallen weg
-    V, F = mc.weld_triangles(P)
-    m = mc.join_plain([mc.Mesh(V, F)])
-    assert mc.mesh_stats(m.V, m.F)["watertight"] or True
-    res = mc.split_planes(plate, [mc.parse_plane("x=1")])
-    check_split(plate, res)
+    """Stufe: die Ebene y=1 liegt genau in der Stufenflaeche (x von 1 bis 4) - deren Dreiecke sind koplanar zum Schnitt."""
+    step = shapes.prism([(0, 0), (4, 0), (4, 1), (1, 1), (1, 2), (0, 2)], h=1.0)
+    plane = mc.parse_plane("y=1")
+    s = plane.signed(step.V)
+    coplanar = np.all(np.abs(s[step.F]) < 1e-12, axis=1)
+    assert coplanar.sum() >= 2                                  # die Stufenflaeche liegt wirklich in der Ebene
+    res = mc.split_planes(step, [plane])
+    check_split(step, res)
+    for p in res.parts:
+        assert mc.mesh_stats(p.V, p.F)["watertight"]
+    assert len(res.parts) == 2
 
 
 def test_wedges():

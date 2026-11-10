@@ -47,7 +47,14 @@ async ([b64, how, value, fmt]) => {
   await press();
   const joinStatus = document.getElementById("status").textContent;
   const joined = py.FS.readdir("/work/out").filter((n) => n.startsWith("joined."));
-  return {names, splitStatus, joinStatus, joined};
+  let outB64 = "";
+  if (joined.length) {
+    const jb = py.FS.readFile("/work/out/" + joined[0]);
+    let bin = "";
+    for (let i = 0; i < jb.length; i += 8192) bin += String.fromCharCode.apply(null, jb.subarray(i, i + 8192));
+    outB64 = btoa(bin);
+  }
+  return {names, splitStatus, joinStatus, joined, outB64};
 }
 """
 
@@ -76,13 +83,19 @@ def main():
         res = page.evaluate(JS, [data, how, value, fmt])
         browser.close()
     srv.shutdown()
-    print(engine, how, res)
+    print(engine, how, {k: v for k, v in res.items() if k != "outB64"})
     if errors:
         print("Seitenfehler:", errors)
     ok = (not res.get("error") and len(res.get("names", [])) == expect_parts + 1 and "FEHLER" not in res["splitStatus"]
           and "Hash" in res["joinStatus"] and "= Quelle" in res["joinStatus"] and res["joined"])
     if not ok:
         sys.exit("FEHLGESCHLAGEN: die Web-Version setzt in " + engine + " nicht bitgenau zusammen")
+    # die geschriebene Ergebnisdatei selbst pruefen (nicht nur die Meldung der Seite): sie muss dieselbe Dreiecksmenge enthalten
+    back = mc.read_meshes_bytes("stl", base64.b64decode(res["outB64"]), "joined")[0]
+    want = mc.triangle_hash(m.V, m.F, "float32")
+    got = mc.triangle_hash(back.V, back.F, "float32")
+    if got != want:
+        sys.exit("FEHLGESCHLAGEN: die Ergebnisdatei aus %s hat %d Dreiecke und Hash %s... statt %s..." % (engine, len(back.F), got[:12], want[:12]))
     print("OK: %s (%s) - Zerlegen und Zusammensetzen im Browser sind bitgenau" % (engine, how))
 
 
