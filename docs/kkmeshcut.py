@@ -1593,9 +1593,13 @@ def recover_outdir(out):
     kommt der ganze alte Satz zurueck; war es fertig, wird nur der Rest weggeraeumt."""
     out = Path(out)
     try:
-        entries = [d for d in out.iterdir() if d.name.startswith(".meshcut_") and d.is_dir() and (d / JOURNAL).is_file()]
+        leftovers = [d for d in out.iterdir() if d.name.startswith(".meshcut_") and d.is_dir()]
     except OSError:
         return
+    entries = [d for d in leftovers if (d / JOURNAL).is_file()]
+    for d in leftovers:
+        if d not in entries:                                         # Zwischenordner eines abgebrochenen Laufs, noch nichts installiert
+            rmtree_force(d)
     for aside in entries:
         try:
             j = json.loads((aside / JOURNAL).read_text(encoding="utf-8"))
@@ -2001,8 +2005,6 @@ def cmd_join(a):
         side, parts = load_parts(inputs[0])
         guarded = set(check_sidecar(side)) | {SIDECAR}
         if outp.exists() and any((inputs[0] / n).exists() and os.path.samefile(inputs[0] / n, outp) for n in guarded):
-            fail("%s gehoert zu den Teilen in %s - bitte ein anderes Ziel waehlen." % (outp, inputs[0]))
-        if os.path.normcase(str(outp.resolve().parent)) == os.path.normcase(str(inputs[0].resolve())) and os.path.normcase(outp.name) in {os.path.normcase(n) for n in guarded}:
             fail("%s gehoert zu den Teilen in %s - bitte ein anderes Ziel waehlen." % (outp, inputs[0]))
         mesh = join_with_sidecar(parts, side)
         prec = side["source"]["precision"]
