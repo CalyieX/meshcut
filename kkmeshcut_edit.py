@@ -631,6 +631,10 @@ def close_holes(sc, pid, removed):
                     t, emerg = None, 1
                 if t is not None and not emerg and len(t) == len(Pr) - 2:
                     tris = t
+                    qe = min(_quality(Pr[list(x)]) for x in t)                 # Pruefer: Ohrenschnitt gegen Faecher vom Mittelpunkt
+                    qf = min(_quality(np.array([Pr[k], Pr[(k + 1) % len(Pr)], cen])) for k in range(len(Pr)))
+                    if qe < SLIVER and qf > 3 * qe:
+                        tris = None
         vn_flat = sc.add_vn(n) if (tris is not None and has_n) else -1
         if tris is not None:
             for a, b, c in tris:
@@ -695,6 +699,47 @@ def choose_shape(region, shape="auto", axis="auto"):
     else:
         fail("Achse '%s' gibt es nicht - moeglich: auto, x, y, z." % str(axis)[:20])
     return shape, ax
+
+
+def _quality(P):
+    """Dreiecksgüte 0..1 (1 = gleichseitig, 0 = flach)."""
+    a, b, c = P
+    e2 = float(((b - a) ** 2).sum() + ((c - b) ** 2).sum() + ((a - c) ** 2).sum())
+    return 0.0 if e2 <= 0 else min(1.0, 4 * math.sqrt(3) * float(np.linalg.norm(np.cross(b - a, c - a))) / 2 / e2)
+
+
+SCORE_SAMPLES = 300
+SLIVER = 0.05                                                    # Dreiecksgüte, unter der ein Ohrenschnitt-Deckel als Splitter gilt
+SCORE_TRIANGLES = 4000
+
+
+def rank_shapes(sc, region, scale=1.0, axis="auto"):
+    """Rechnet alle Kandidaten (Quader, Kugel, Zylinder je Achse), vergleicht jeden mit dem Original (Abstand der Eckpunkte in beide
+    Richtungen, relativ zur Diagonale) und sortiert: das beste zuerst. Rueckgabe: Liste (Wert, Form, Achse)."""
+    lo, hi = np.array(region["bbox"]["min"]), np.array(region["bbox"]["max"])
+    centre = (lo + hi) / 2
+    half = (hi - lo) / 2 * float(scale)
+    half = np.maximum(half, 0.025 * float(half.max()) + 1e-12)
+    diag = float(np.linalg.norm(2 * half)) or 1.0
+    T, _ = sc.triangles(region["face_ids"])
+    if len(T) > SCORE_TRIANGLES:
+        T = T[np.linspace(0, len(T) - 1, SCORE_TRIANGLES).astype(np.int64)]
+    rv = np.unique(T)
+    if len(rv) > SCORE_SAMPLES:
+        rv = rv[np.linspace(0, len(rv) - 1, SCORE_SAMPLES).astype(np.int64)]
+    out = []
+    cands = [("box", 0), ("sphere", 0)] + [("cylinder", a) for a in range(3) if axis in (None, "auto") or "xyz".index(axis) == a]
+    for kind, ax in cands:
+        tmp = Scene()
+        faces = make_primitive(tmp, kind, ax, centre - half, centre + half, None, (0, 0, 1, 1), False, False, "")
+        PT = np.array([[c[0] for c in f.c][:3] for f in faces], dtype=np.int64)
+        pv = np.unique(PT)
+        if len(pv) > SCORE_SAMPLES:
+            pv = pv[np.linspace(0, len(pv) - 1, SCORE_SAMPLES).astype(np.int64)]
+        d1 = mc.dist_to_mesh(sc.V[rv], tmp.V, PT)                 # Original -> Kandidat
+        d2 = mc.dist_to_mesh(tmp.V[pv], sc.V, T)                  # Kandidat -> Original
+        out.append(((float(d1.mean()) + float(d2.mean())) / 2 / diag + 0.5 * max(float(d1.max()), float(d2.max())) / diag, kind, ax))
+    return sorted(out, key=lambda x: x[0])
 
 
 def make_primitive(sc, shape, axis, lo, hi, material, uv_box, with_normals, with_uv, smooth_name, segments=32, obj="", grp=""):
@@ -864,8 +909,13 @@ def edit_scene(sc, region, mode, shape="auto", axis="auto", scale=1.0, material=
     lo = np.array(region["bbox"]["min"])
     hi = np.array(region["bbox"]["max"])
     prim = None
+    ranking = []
     if mode == "swap":
-        kind, ax = choose_shape(region, shape, axis)
+        if shape in (None, "auto"):                                  # Pruefer: mehrere Kandidaten rechnen, selbst bewerten, den besten nehmen
+            ranking = rank_shapes(sc, region, scale, axis)
+            kind, ax = ranking[0][1], ranking[0][2]
+        else:
+            kind, ax = choose_shape(region, shape, axis)
         centre = (lo + hi) / 2
         half = (hi - lo) / 2 * float(scale)
         half = np.maximum(half, 0.025 * float(half.max()) + 1e-12)       # ein flaches Element (z. B. eine Platte) ergibt keinen Ersatz mit Dicke null
@@ -891,7 +941,7 @@ def edit_scene(sc, region, mode, shape="auto", axis="auto", scale=1.0, material=
     open_after = _boundary_edges(out, position_ids(out))
     report = {"entfernt": len(removed), "entfernte_dreiecke": int(sc.n_triangles(removed)), "neu": len(new_faces),
               "neue_dreiecke": int(sum(len(f.c) - 2 for f in new_faces)), "loecher_geschlossen": holes,
-              "ersatz": prim_note, "offene_kanten_vorher": open_before, "offene_kanten_nachher": open_after}
+              "ersatz": prim_note, "kandidaten": [(round(v, 4), k, a) for v, k, a in ranking], "offene_kanten_vorher": open_before, "offene_kanten_nachher": open_after}
     return out, kept, report
 
 
@@ -914,6 +964,10 @@ def _run_edit(a, mode):
     kept_tri = sc.n_triangles(kept)
     mc.say("%s %d (%s, %d Dreiecke) %s." % ("Entfernt: Region" if mode == "remove" else "Ersetzt: Region", r["id"], r["name"], rep["entfernte_dreiecke"],
                                             "entfernt" if mode == "remove" else "durch " + rep["ersatz"]))
+    if rep["kandidaten"]:
+        names = {"box": "Quader", "sphere": "Kugel", "cylinder": "Zylinder"}
+        mc.say("Kandidaten verglichen (Abweichung zum Original, kleiner ist besser): " + ", ".join(
+            "%s%s %.3f" % (names[k], " " + "xyz"[a] if k == "cylinder" else "", v) for v, k, a in rep["kandidaten"]))
     if rep["loecher_geschlossen"]:
         mc.say("Loch geschlossen (%d Rand%s), Material und UV der Umgebung uebernommen." % (rep["loecher_geschlossen"], "" if rep["loecher_geschlossen"] == 1 else "er"))
     if same is not None:

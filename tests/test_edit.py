@@ -637,3 +637,67 @@ def test_centre_fan_gets_a_uv_in_the_middle_of_the_rim(tmp_path):
     uv = [float(x) for x in new.vt[next(iter(centre))].split()]
     rim = np.array([[float(x) for x in new.vt[c[1]].split()] for f in fan for c in f.c if c[1] >= 0])
     assert rim.min(axis=0)[0] - 1e-9 <= uv[0] <= rim.max(axis=0)[0] + 1e-9 and all(c[1] >= 0 for f in fan for c in f.c)
+
+
+# ----------------------------------------------------------------------------- Pruefer: Kandidaten bewerten
+@pytest.mark.parametrize("make,kind", [(lambda: shapes.cube(2.0), "box"), (lambda: shapes.sphere(n=24, m=14, r=1.0), "sphere")])
+def test_swap_ranks_candidates_and_the_matching_one_wins(tmp_path, make, kind):
+    a, b = make(), shapes.cube(1.0, lo=(9, 9, 9))
+    V = np.vstack([a.V, b.V])
+    F = np.vstack([a.F, b.F + len(a.V)])
+    p = tmp_path / "m.stl"
+    p.write_bytes(mc.mesh_bytes("stl", V, F))
+    sc, regs = regions_of(p)
+    rank = ed.rank_shapes(sc, regs[0])
+    assert rank[0][1] == kind and rank[0][0] < 0.15 and [r[0] for r in rank] == sorted(r[0] for r in rank)
+    assert {(k, a) for _, k, a in rank} == {("box", 0), ("sphere", 0), ("cylinder", 0), ("cylinder", 1), ("cylinder", 2)}
+    r = mc.swap(p, region=1, out=tmp_path / "o.stl")
+    assert "Kandidaten verglichen" in r["text"]
+
+
+def test_swap_axis_limits_the_cylinder_candidates(tmp_path):
+    sc, regs = regions_of(scene_obj(tmp_path))
+    rank = ed.rank_shapes(sc, regs[1], axis="y")
+    assert [(k, a) for _, k, a in rank if k == "cylinder"] == [("cylinder", 1)]
+
+
+def test_explicit_shape_skips_the_ranking(tmp_path):
+    r = mc.swap(scene_obj(tmp_path), region=2, shape="sphere", out=tmp_path / "o.obj")
+    assert "Kandidaten" not in r["text"]
+
+
+def test_triangle_quality_scale():
+    eq = np.array([[0, 0, 0], [1, 0, 0], [0.5, math.sqrt(3) / 2, 0]])
+    assert abs(ed._quality(eq) - 1.0) < 1e-12
+    assert ed._quality(np.array([[0, 0, 0], [1, 0, 0], [2, 0, 0]])) == 0.0
+    assert ed._quality(np.array([[0, 0, 0], [1, 0, 0], [0.5, 0.01, 0]])) < 0.05
+
+
+def test_remove_has_no_candidate_ranking(tmp_path):
+    r = mc.remove(scene_obj(tmp_path), region=2, out=tmp_path / "o.obj")
+    assert "Kandidaten" not in r["text"]
+
+
+def test_sliver_ear_clip_falls_back_to_a_fan(tmp_path, monkeypatch):
+    """Sind die Ohrenschnitt-Dreiecke Splitter und der Faecher vom Mittelpunkt gut, gilt der Faecher; das Loch bleibt trotzdem zu."""
+    real = ed._quality
+    calls = []
+
+    def fake(P):
+        calls.append(1)
+        return 0.001 if len(calls) <= 2 else real(P)             # die zwei Ohrenschnitt-Dreiecke des Vierecks sind "Splitter"
+    monkeypatch.setattr(ed, "_quality", fake)
+    out = tmp_path / "o.obj"
+    mc.remove(scene_obj(tmp_path), region=4, out=out)
+    monkeypatch.undo()
+    new = ed.read_scene(out)
+    pid = ed.position_ids(new)
+    assert len(new.faces[-4:]) == 4 and all(len(f.c) == 3 for f in new.faces[-4:])      # Faecher aus vier statt zwei Dreiecken
+    assert all(v == 2 for v in ed.edge_counts(new, pid, [i for i, f in enumerate(new.faces) if f.obj == "part1"]).values())
+
+
+def test_good_ear_clip_is_kept(tmp_path):
+    out = tmp_path / "o.obj"
+    mc.remove(scene_obj(tmp_path), region=4, out=out)
+    new = ed.read_scene(out)
+    assert len([f for f in new.faces if f.obj == "part1" and f.mat == "blue"]) >= 1 and len(new.faces[-2:]) == 2
