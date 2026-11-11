@@ -1014,3 +1014,138 @@ def test_verify_says_open_parts_are_not_checked_without_caps(tmp_path):
     r = mc.verify(tmp_path / "o")
     texts = {n: t for n, ok, t in r["checks"]}
     assert "nicht geprueft" in texts["wasserdicht"] and "nicht geprueft" in texts["euler"]
+
+
+# ----------------------------------------------------------------------------- Lochfuellung: einzelne Entscheidungen
+def _ngon(n, r=1.0):
+    a = np.linspace(0, 2 * math.pi, n, endpoint=False)
+    return np.stack([r * np.cos(a), r * np.sin(a), np.zeros(n)], axis=1)
+
+
+def test_fan_is_only_consistent_for_a_star_shaped_loop():
+    star = _ngon(8)
+    assert ed._fan_is_consistent(star, star.mean(axis=0), np.array([0.0, 0.0, 1.0]))
+    c_shape = np.array([[0, 0, 0], [4, 0, 0], [4, 1, 0], [1, 1, 0], [1, 3, 0], [4, 3, 0], [4, 4, 0], [0, 4, 0]], float)
+    assert not ed._fan_is_consistent(c_shape, c_shape.mean(axis=0), np.array([0.0, 0.0, 1.0]))
+
+
+def test_projected_ear_clip_refuses_triangles_that_face_against_the_plane_normal():
+    poly = _ngon(7)
+    up, down = np.array([0.0, 0.0, 1.0]), np.array([0.0, 0.0, -1.0])
+    assert ed._projected_ear_clip(poly, poly.mean(axis=0), up) is not None and len(ed._projected_ear_clip(poly, poly.mean(axis=0), up)) == 5
+    assert ed._projected_ear_clip(poly, poly.mean(axis=0), down) is None
+
+
+def test_forced_fan_carries_uv_for_the_centre_point(tmp_path, monkeypatch):
+    monkeypatch.setattr(ed, "_projected_ear_clip", lambda *a: None)
+    p = _skew_hexagon_cube(tmp_path)
+    out = tmp_path / "o.obj"
+    mc.remove(p, name="weg", out=out)
+    new = ed.read_scene(out)
+    assert all(c[1] >= 0 for f in new.faces[3:] for c in f.c)
+
+
+def test_curved_fill_uses_two_rings(tmp_path):
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bench"))
+    import edit_bench as eb
+    assert len(ed.CURVED_RINGS) == 2
+    m = eb.case_hole("sphere", 1.0, tmp_path, "rect")
+    assert m["fuell_dreiecke"] == 24 * (2 * len(ed.CURVED_RINGS) + 1)           # Rand mit 24 Punkten: je Ringpaar 2 Dreiecke je Punkt, dazu der Mittelfaecher
+
+
+def test_ring_uv_falls_back_to_linear_when_the_boundary_uv_has_a_seam():
+    """Springt die UV am Rand (Naht 0,98 -> 0,02), wuerde eine Abbildung aus der Lage Unsinn liefern: dann wird linear zur Mitte gemittelt."""
+    sc, rloop, Pr = _paraboloid_loop(list(range(12)))
+    u = np.array([0.95, 0.97, 0.99, 0.01, 0.03, 0.05, 0.05, 0.03, 0.01, 0.99, 0.97, 0.95])
+    sc.vt = ["%.6f %.6f" % (a, 0.5) for a in u]
+    rloop = [(x[0], x[1], k, x[3], x[4]) for k, x in enumerate(rloop)]
+    cen = Pr.mean(axis=0)
+    cv = ed._curved_fill(sc, rloop, Pr, cen, np.array([0.0, 0.0, 1.0]))
+    assert cv is not None and cv["star"]
+    ref = sc.faces[0]
+    n_vt_before = len(sc.vt)
+    ed._fill_with_rings(sc, rloop, Pr, cen, np.array([0.0, 0.0, 1.0]), cv, ref, False)
+    uvc = np.array([[float(t) for t in s.split()[:2]] for s in sc.vt[:12]]).mean(axis=0)
+    arr = np.array([[float(t) for t in s.split()[:2]] for s in sc.vt[:12]])
+    first_ring = np.array([[float(t) for t in s.split()[:2]] for s in sc.vt[n_vt_before:n_vt_before + 12]])
+    f = ed.CURVED_RINGS[0]
+    assert np.allclose(first_ring, uvc + f * (arr - uvc), atol=1e-6)
+
+
+def test_non_obj_self_check_catches_a_changed_area_with_same_extent(tmp_path, monkeypatch):
+    """Rahmen bleibt gleich, aber eine Flaeche ist zusammengefallen: nur der Flaechenvergleich bemerkt es."""
+    src = tmp_path / "a.stl"
+    src.write_bytes(ed.scene_bytes(ed.read_scene(scene_obj(tmp_path)), "stl"))
+    real = ed.scene_bytes
+
+    def squash(sc, fmt):
+        t = sc.copy()
+        f = t.faces[0]
+        t.faces = [ed.Face([f.c[0], f.c[1], f.c[1]] + list(f.c[3:]), f.mat, f.obj, f.grp, f.smooth)] + t.faces[1:]
+        return real(t, fmt)
+    monkeypatch.setattr(ed, "scene_bytes", squash)
+    out = tmp_path / "o.stl"
+    with pytest.raises(mc.MeshcutError, match="Flaeche oder Ausdehnung"):
+        mc.remove(src, region=2, out=out)
+    assert not out.exists()
+
+
+def test_concave_quad_is_not_split_as_a_convex_one(tmp_path):
+    """Ein konkaves Viereck (Pfeilspitze), dessen erste Ecke eine Diagonale nach aussen hat, behaelt seine Flaeche im STL."""
+    lines = ["v 4 0 0", "v 1 1 0", "v 0 4 0", "v 0 0 0", "v 9 9 0", "v 10 9 0", "v 9 10 0",
+             "o A", "f 1 2 3 4", "o B", "f 5 6 7"]
+    p = tmp_path / "q.obj"
+    p.write_text("\n".join(lines) + "\n")
+    out = tmp_path / "o.stl"
+    mc.remove(p, name="B", out=out)
+    m = mc.load_mesh(out)
+    assert abs(mc._face_areas(m.V, m.F).sum() - 4.0) < 1e-4
+
+
+def test_mtl_texture_names_with_a_path_are_never_followed(tmp_path):
+    work = tmp_path / "w"
+    work.mkdir()
+    p = scene_obj(work)
+    (work / "sub").mkdir()
+    (work / "sub" / "x.png").write_bytes(b"X")
+    (tmp_path / "evil.png").write_bytes(b"E")
+    (work / "m.mtl").write_text("newmtl blue\nmap_Kd sub/x.png\nmap_Ks ../evil.png\nmap_Kd ok.png\n")
+    (work / "ok.png").write_bytes(b"O")
+    dst = tmp_path / "o" / "d"
+    dst.mkdir(parents=True)
+    mc.remove(p, region=2, out=dst / "o.obj")
+    assert (dst / "ok.png").read_bytes() == b"O"
+    assert not (dst / "sub").exists() and not (tmp_path / "o" / "evil.png").exists()
+
+
+def test_ring_uv_fit_check_needs_a_loop_that_is_not_a_circle():
+    """Bei einem Rand mit wechselndem Radius ist die Abbildung Lage -> UV bestimmt; springt die UV (Naht), muss trotzdem linear gemittelt werden."""
+    ang = np.linspace(0, 2 * math.pi, 12, endpoint=False)
+    rad = 1.0 + 0.25 * (np.arange(12) % 2)
+    f = lambda x, y: 0.3 * (x * x + y * y)
+    Pr = np.array([[r * math.cos(a), r * math.sin(a), f(r * math.cos(a), r * math.sin(a))] for r, a in zip(rad, ang)])
+    sc = ed.Scene()
+    sc.V = np.vstack([Pr, [[1.6, 0, f(1.6, 0)], [1.5, 0.4, f(1.5, 0.4)]]])
+    sc.faces = [ed.Face([(0, -1, -1), (12, -1, -1), (13, -1, -1)])]
+    u = np.array([0.95, 0.97, 0.99, 0.01, 0.03, 0.05, 0.05, 0.03, 0.01, 0.99, 0.97, 0.95])
+    sc.vt = ["%.6f %.6f" % (a, 0.5) for a in u]
+    rloop = [(k, k, k, -1, 0) for k in range(12)]
+    cen = Pr.mean(axis=0)
+    cv = ed._curved_fill(sc, rloop, Pr, cen, np.array([0.0, 0.0, 1.0]))
+    assert cv is not None and cv["star"]
+    n_before = len(sc.vt)
+    ed._fill_with_rings(sc, rloop, Pr, cen, np.array([0.0, 0.0, 1.0]), cv, sc.faces[0], False)
+    arr = np.array([[float(t) for t in s.split()[:2]] for s in sc.vt[:12]])
+    ring = np.array([[float(t) for t in s.split()[:2]] for s in sc.vt[n_before:n_before + 12]])
+    uvc = arr.mean(axis=0)
+    assert np.allclose(ring, uvc + ed.CURVED_RINGS[0] * (arr - uvc), atol=1e-6)
+
+
+def test_ear_clip_refuses_a_loop_that_runs_against_the_normal():
+    Pr = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0.0]])
+    n = np.array([0.0, 0.0, 1.0])
+    cen = Pr.mean(axis=0)
+    t = ed._projected_ear_clip(Pr, cen, n)
+    assert t is not None and len(t) == 2
+    assert ed._projected_ear_clip(Pr[::-1], cen, n) is None
