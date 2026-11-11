@@ -308,7 +308,7 @@ def test_stl_is_edited_geometry_only(tmp_path):
     p = tmp_path / "two.stl"
     p.write_bytes(mc.mesh_bytes("stl", V, F))
     r = mc.remove(p, region=2, out=tmp_path / "o.stl")
-    assert "nur Geometrie" in r["text"]
+    assert "nur mit Geometrie" in r["text"]
     assert len(mc.load_mesh(tmp_path / "o.stl").F) == len(a.F)
 
 
@@ -701,3 +701,168 @@ def test_good_ear_clip_is_kept(tmp_path):
     mc.remove(scene_obj(tmp_path), region=4, out=out)
     new = ed.read_scene(out)
     assert len([f for f in new.faces if f.obj == "part1" and f.mat == "blue"]) >= 1 and len(new.faces[-2:]) == 2
+
+
+# ----------------------------------------------------------------------------- Pruefrunde 6: Befunde von Spock
+def test_object_name_finds_a_single_part_object(tmp_path):
+    """Ein Objekt, das zugleich ein eigenes Teil ist, steht als 'Teil N' im Verzeichnis, bleibt aber unter seinem Objektnamen waehlbar."""
+    p = scene_obj(tmp_path)
+    r = mc.remove(p, name="part2", out=tmp_path / "o.obj")
+    assert "Region 2" in r["text"]
+    sc = ed.read_scene(p)
+    regs = ed.find_regions(sc)
+    assert any(a["name"] == "part2" for r_ in regs for a in r_["also"])
+    with pytest.raises(mc.MeshcutError, match="part2"):
+        mc.remove(p, name="gibtsnicht", out=tmp_path / "o2.obj")
+    assert ed.choose_region(sc, regs, name="PART2")["id"] == ed.choose_region(sc, regs, name="part2")["id"]
+
+
+def test_ambiguous_name_is_refused(tmp_path):
+    p = tmp_path / "a.obj"
+    h1, b1 = cube_lines((0, 0, 0), (1, 1, 1), 0, 0, 0, ["x"] * 6, "A")
+    h2, b2 = cube_lines((3, 0, 0), (4, 1, 1), 8, 24, 6, ["y"] * 6, "x")        # Objekt heisst wie das Material des ersten
+    p.write_text("\n".join(h1 + h2 + b1 + b2) + "\n")
+    with pytest.raises(mc.MeshcutError, match="mehrere"):
+        mc.remove(p, name="x", out=tmp_path / "o.obj")
+
+
+@pytest.mark.parametrize("bad", [-1.0, 0.0, float("nan"), float("inf"), 1000.0, True])
+def test_scale_must_be_sane(tmp_path, bad):
+    with pytest.raises(mc.MeshcutError, match="--scale"):
+        mc.swap(scene_obj(tmp_path), region=1, scale=bad, out=tmp_path / "o.obj")
+    assert not (tmp_path / "o.obj").exists()
+
+
+@pytest.mark.parametrize("bad", [-5, 0, 10, 40000])
+def test_size_must_be_sane(tmp_path, bad):
+    with pytest.raises(mc.MeshcutError, match="--size"):
+        mc.regions(scene_obj(tmp_path), tmp_path / "r", size=bad)
+
+
+def test_swap_without_any_material_does_not_inherit_the_previous_one(tmp_path):
+    """Ein Ersatz ohne Material darf nicht still das Material der Flaeche davor erben."""
+    h, b = cube_lines((0, 0, 0), (1, 1, 1), 0, 0, 0, ["blue"] * 6, "A")
+    h2, b2 = cube_lines((3, 0, 0), (4, 1, 1), 8, 24, 6, ["blue"] * 6, "B")
+    p = tmp_path / "n.obj"
+    txt = "\n".join(h + h2 + b + b2) + "\n"
+    p.write_text(txt)
+    sc = ed.read_scene(p)
+    for f in sc.faces[6:]:
+        f.mat = None                                                # zweiter Wuerfel: gar kein Material
+    q = tmp_path / "n2.obj"
+    q.write_bytes(ed.obj_text(sc))
+    assert b"usemtl off" in q.read_bytes()
+    back = ed.read_scene(q)
+    assert [f.mat for f in back.faces[:6]] == ["blue"] * 6 and [f.mat for f in back.faces[6:]] == [None] * 6
+    out = tmp_path / "o.obj"
+    mc.swap(q, region=2, shape="box", out=out)
+    new = ed.read_scene(out)
+    assert new.faces[-1].mat is None and b"usemtl off" in out.read_bytes()                 # der Ersatz steht ohne Material da, nicht mit dem davor
+
+
+def test_equal_size_regions_pick_the_lower_number_everywhere(tmp_path):
+    """--at und das Flag at_selects_this meinen bei gleich grossen, sich deckenden Elementen dasselbe."""
+    h, b = cube_lines((0, 0, 0), (1, 1, 1), 0, 0, 0, ["m1", "m1", "m1", "m1", "m2", "m2"], "O")
+    p = tmp_path / "t.obj"
+    p.write_text("\n".join(h + b) + "\n")
+    sc = ed.read_scene(p)
+    regs = ed.find_regions(sc)
+    for r in regs:
+        got = ed.choose_region(sc, regs, at=",".join("%.6g" % x for x in r["point"]))
+        assert (got["id"] == r["id"]) == r["at_selects_this"]
+
+
+def test_self_check_covers_new_faces(tmp_path, monkeypatch):
+    """Veraendert sich nur der Ersatz (Material) im Geschriebenen, schlaegt die Pruefung an und die Ausgabe wird entfernt."""
+    p = scene_obj(tmp_path)
+    real = ed.scene_bytes
+
+    def tamper(sc, fmt):
+        data = real(sc, fmt)
+        i = data.rindex(b"usemtl ")
+        return data[:i] + b"usemtl ZZZ\n" + data[data.index(b"\n", i) + 1:]
+    monkeypatch.setattr(ed, "scene_bytes", tamper)
+    out = tmp_path / "o.obj"
+    with pytest.raises(mc.MeshcutError, match="Selbstpruefung"):
+        mc.swap(p, region=2, shape="box", out=out)
+    assert not out.exists()
+
+
+def test_report_numbers_come_from_the_written_file(tmp_path):
+    p = scene_obj(tmp_path)
+    r = mc.remove(p, region=2, out=tmp_path / "o.obj")
+    assert "aus der geschriebenen Datei" in r["text"]
+    back = ed.read_scene(tmp_path / "o.obj")
+    assert str(ed.read_scene(p).n_triangles()) in r["text"] and back.n_triangles() < ed.read_scene(p).n_triangles()
+
+
+def test_other_formats_are_checked_too(tmp_path):
+    src = tmp_path / "a.stl"
+    sc = ed.read_scene(scene_obj(tmp_path))
+    src.write_bytes(ed.scene_bytes(sc, "stl"))
+    r = mc.remove(src, region=2, out=tmp_path / "o.stl")
+    assert "Farben, Materialien und UV" in r["text"]
+
+
+# ----------------------------------------------------------------------------- Pruefrunde 6, zweite Welle: Gleichstand, Formate, Woelbung
+def _tie_scene(tmp_path):
+    """Wuerfel aus 6 Vierecken: Objekt A = Flaechen 0-3, Objekt B = 4-5, Material m1 = Flaechen 2-5 (gleich gross wie A, ueberlappt es)."""
+    quads = [(1, 2, 3, 4), (5, 8, 7, 6), (1, 5, 6, 2), (2, 6, 7, 3), (3, 7, 8, 4), (5, 1, 4, 8)]
+    mats = ["m2", "m2", "m1", "m1", "m1", "m1"]
+    objs = ["A", "A", "A", "A", "B", "B"]
+    lines = ["v 0 0 0", "v 1 0 0", "v 1 1 0", "v 0 1 0", "v 0 0 1", "v 1 0 1", "v 1 1 1", "v 0 1 1"]
+    for q, m, o in zip(quads, mats, objs):
+        lines += ["o " + o, "usemtl " + m, "f " + " ".join(map(str, q))]
+    p = tmp_path / "tie.obj"
+    p.write_text("\n".join(lines) + "\n")
+    return p
+
+
+def test_overlapping_equal_regions_choose_the_lower_number_in_both_places(tmp_path):
+    sc = ed.read_scene(_tie_scene(tmp_path))
+    regs = ed.find_regions(sc)
+    by = {r["name"]: r for r in regs}
+    a, m1 = by["A"], by["m1"]
+    assert len(a["face_ids"]) == len(m1["face_ids"]) and a["id"] < m1["id"]
+    tri = sc.V[[c[0] for c in sc.faces[2].c]].mean(axis=0)                    # Flaeche 2 liegt in beiden
+    got = ed.choose_region(sc, regs, at=",".join("%.9g" % x for x in tri))
+    assert got["id"] == a["id"]
+    assert a["at_selects_this"] and not m1["at_selects_this"]
+
+
+def test_other_format_with_missing_triangle_fails_the_self_check(tmp_path, monkeypatch):
+    src = tmp_path / "a.stl"
+    sc = ed.read_scene(scene_obj(tmp_path))
+    src.write_bytes(ed.scene_bytes(sc, "stl"))
+    real = ed.scene_bytes
+
+    def tamper(s, fmt):
+        t = s.copy()
+        t.faces = t.faces[:-1]
+        return real(t, fmt)
+    monkeypatch.setattr(ed, "scene_bytes", tamper)
+    out = tmp_path / "o.stl"
+    with pytest.raises(mc.MeshcutError, match="Selbstpruefung"):
+        mc.remove(src, region=2, out=out)
+    assert not out.exists()
+
+
+def _paraboloid_loop(order):
+    ang = np.linspace(0, 2 * math.pi, 12, endpoint=False)
+    f = lambda x, y: 0.3 * (x * x + y * y)
+    Pr = np.array([[math.cos(a), math.sin(a), f(math.cos(a), math.sin(a))] for a in ang])
+    sc = ed.Scene()
+    sc.V = np.vstack([Pr, [[1.6, 0, f(1.6, 0)], [1.5, 0.4, f(1.5, 0.4)]]])
+    sc.faces = [ed.Face([(0, -1, -1), (12, -1, -1), (13, -1, -1)])]
+    rloop = [(k, k, -1, -1, 0) for k in range(12)]
+    Pr = Pr[order]
+    return sc, [rloop[k] for k in order], Pr
+
+
+def test_curved_fill_needs_a_star_shaped_loop_in_turning_order():
+    ok = _paraboloid_loop(list(range(12)))
+    assert ed._curved_fill(ok[0], ok[1], ok[2], ok[2].mean(axis=0), np.array([0.0, 0.0, 1.0])) is not None
+    cw = _paraboloid_loop(list(range(12))[::-1])                              # falsch herum
+    assert ed._curved_fill(cw[0], cw[1], cw[2], cw[2].mean(axis=0), np.array([0.0, 0.0, 1.0])) is None
+    mix = _paraboloid_loop([0, 5, 2, 7, 4, 1, 6, 3, 8, 11, 10, 9])           # verdreht
+    assert ed._curved_fill(mix[0], mix[1], mix[2], mix[2].mean(axis=0), np.array([0.0, 0.0, 1.0])) is None

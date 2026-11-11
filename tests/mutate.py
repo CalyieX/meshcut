@@ -231,6 +231,24 @@ MUTANTS = [
     ('r6 edit: Mittelpunkt-Deckel ohne UV', 'cvt = sc.add_vt(arr.mean(axis=0))', 'cvt = -1', "kkmeshcut_edit.py"),
     ('r4 serve: MCP-Zeilenlaenge unbegrenzt', 'if len(line) > MAX_BODY and not line.endswith(NL):', 'if False:', "kkmeshcut_serve.py"),
     ('r4 serve: Host [::1] ohne Port', 'host = host[1:host.find("]")] if host.startswith("[") and "]" in host else', "host = ((host.rsplit(':', 1)[0].strip('[]')) if True else host) if False else", "kkmeshcut_serve.py"),
+    ('r7 edit: usemtl off nicht geschrieben', 'lines.append("usemtl " + (f.mat if f.mat is not None else "off"))', 'lines.append("usemtl " + f.mat) if f.mat is not None else None', "kkmeshcut_edit.py"),
+    ('r7 edit: off nicht gelesen', 'cur["mat"] = None if rest in ("", "off") else rest', 'cur["mat"] = rest or None', "kkmeshcut_edit.py"),
+    ('r7 edit: Alias ohne Namen', 'if name:                                              # dieselben', 'if False:                                              # dieselben', "kkmeshcut_edit.py"),
+    ('r7 edit: Namen nie mehrdeutig', 'if len(hit) > 1:', 'if False:', "kkmeshcut_edit.py"),
+    ('r7 edit: Gleichstand groesste Nummer', 'key=lambda r: (-len(r["face_ids"]), -r["id"])', 'key=lambda r: (-len(r["face_ids"]), r["id"])', "kkmeshcut_edit.py"),
+    ('r7 edit: Gleichstand at', 'key=lambda r: (r["faces"], r["id"]))', 'key=lambda r: (r["faces"], -r["id"]))', "kkmeshcut_edit.py"),
+    ('r7 edit: scale ungeprueft', 'math.isfinite(sc) and SCALE_RANGE[0] <= sc <= SCALE_RANGE[1]', 'True', "kkmeshcut_edit.py"),
+    ('r7 edit: size ungeprueft', 'SIZE_RANGE[0] <= sz <= SIZE_RANGE[1]', 'True', "kkmeshcut_edit.py"),
+    ('r7 edit: Material neuer Flaechen ungeprueft', '[f.mat for f in fresh_back] != [f.mat for f in fresh] or ', '', "kkmeshcut_edit.py"),
+    ('r7 edit: Ausgabe bleibt bei Fehler', '            Path(dst).unlink()', '            pass', "kkmeshcut_edit.py"),
+    ('r7 edit: andere Formate ungeprueft', 'if not np.isfinite(back.V).all() or back.n_triangles() != n_kept + n_new:', 'if False:', "kkmeshcut_edit.py"),
+    ('r7 edit: Woelbung nie gefuellt', 'if abs(float(h(0.0, 0.0)) - float(hb.mean())) < CURVED_MIN * diam:', 'if True:', "kkmeshcut_edit.py"),
+    ('r7 edit: Woelbung immer gefuellt', 'if abs(float(h(0.0, 0.0)) - float(hb.mean())) < CURVED_MIN * diam:', 'if False:', "kkmeshcut_edit.py"),
+    ('r7 edit: Paraboloid-Guete ungeprueft', 'if float(np.sqrt(np.mean((A @ coef - w) ** 2))) > CURVED_FIT * diam:', 'if False:', "kkmeshcut_edit.py"),
+    ('r7 edit: Stern-Test weg', 'not (np.all(np.diff(ang) > 0) and float(ang[-1] - ang[0]) < 2 * math.pi)', 'False', "kkmeshcut_edit.py"),
+    ('r7 edit: Hoehe der Mitte', 'centre = (sc.add_vertex(cen + float(cv["h"](0.0, 0.0)) * n)', 'centre = (sc.add_vertex(cen)', "kkmeshcut_edit.py"),
+    ('r7 edit: Ringe ohne Hoehe', 'pos = cen + a * cv["u"] + b * cv["v"] + float(cv["h"](a, b)) * n', 'pos = cen + a * cv["u"] + b * cv["v"]', "kkmeshcut_edit.py"),
+    ('r7 edit: Ring-Windung', 'tri(rings[r][k], rings[r][k2], rings[r + 1][k2])', 'tri(rings[r][k2], rings[r][k], rings[r + 1][k2])', "kkmeshcut_edit.py"),
 ]
 
 
@@ -244,6 +262,7 @@ def run(mutant):
     try:
         shutil.copytree(REPO / "tests", work / "tests", ignore=shutil.ignore_patterns("__pycache__"))
         shutil.copytree(REPO / "examples", work / "examples")
+        shutil.copytree(REPO / "bench", work / "bench", ignore=shutil.ignore_patterns("__pycache__"))
         (work / "docs").mkdir()
         mutated = src.replace(old, new, 1)
         for extra in ("kkmeshcut.py", "kkmeshcut_ai.py", "kkmeshcut_serve.py", "kkmeshcut_edit.py"):
@@ -251,7 +270,7 @@ def run(mutant):
         (work / target).write_text(mutated, encoding="utf-8")
         shutil.copy(work / "kkmeshcut.py", work / "docs" / "kkmeshcut.py")
         (work / "docs" / "index.html").write_text((REPO / "docs" / "index.html").read_text(encoding="utf-8"), encoding="utf-8")
-        r = subprocess.run([PY, "-m", "pytest", "-x", "-q", "-p", "no:cacheprovider", "--tb=line", "tests/test_edit.py" if target == "kkmeshcut_edit.py" else "tests"], cwd=work, capture_output=True, text=True, timeout=1500, creationflags=NO_WINDOW, stdin=subprocess.DEVNULL)
+        r = subprocess.run([PY, "-m", "pytest", "-x", "-q", "-p", "no:cacheprovider", "--tb=line", *(["tests/test_edit.py", "tests/test_bench.py"] if target == "kkmeshcut_edit.py" else ["tests"])], cwd=work, capture_output=True, text=True, timeout=1500, creationflags=NO_WINDOW, stdin=subprocess.DEVNULL)
         lines = r.stdout.splitlines()
         tail = [ln for ln in lines if ln.startswith("FAILED") or ln.startswith("ERROR")][:1]
         why = [ln for ln in lines if ln.startswith(("/", "E:", "C:", "D:")) and ": " in ln][:1]            # Zeile aus --tb=line

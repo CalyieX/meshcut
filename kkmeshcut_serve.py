@@ -1,6 +1,6 @@
 """meshcut als Dienst fuer Agenten und andere Programme: MCP (stdio) und HTTP-API.
 
-Beide sprechen dieselben fuenf Werkzeuge: info, split, segment, join, verify. Dateien werden nur unterhalb eines Wurzelordners
+Beide sprechen dieselben Werkzeuge: info, split, segment, join, verify, regions, remove, swap. Dateien werden nur unterhalb eines Wurzelordners
 gelesen und geschrieben (Umgebungsvariable MESHCUT_ROOT oder `--root`, sonst der aktuelle Ordner); Pfade ausserhalb - auch ueber
 Links - werden abgewiesen. Es gibt keine Netzfreigabe ohne Schluessel: die HTTP-API bindet an 127.0.0.1, und nur mit
 MESHCUT_TOKEN (Bearer-Schluessel aus der Umgebung) auch an andere Adressen.

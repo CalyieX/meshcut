@@ -20,10 +20,15 @@ import kkmeshcut as mc
 from kkmeshcut import MeshcutError, fail
 
 KINDS = ("teil", "objekt", "gruppe", "material")
-MAX_EDIT_FACES = 2_000_000                                       # Flaechen, die bearbeitet werden (jede ist ein Python-Objekt): groessere Netze vorher mit split teilen
+MAX_EDIT_FACES = 500_000                                       # Flaechen, die bearbeitet werden (jede ist ein Python-Objekt): groessere Netze vorher mit split teilen
 MAX_REGIONS = 500                                                # mehr Elemente werden nicht nummeriert (die groessten bleiben)
 MAX_LABELS = 60                                                  # so viele Nummern stehen im Uebersichtsbild
-MAX_RENDER_TRIANGLES = 40_000                                    # mehr Dreiecke werden fuers Bild gleichmaessig ausgeduennt
+MAX_RENDER_TRIANGLES = 40_000
+SCALE_RANGE = (0.01, 100.0)                                      # --scale: darunter/darueber entstuende ein unbrauchbarer Ersatz
+SIZE_RANGE = (64, 4096)                                          # --size des Uebersichtsbildes in Pixeln                                    # mehr Dreiecke werden fuers Bild gleichmaessig ausgeduennt
+CURVED_MIN = 0.01                                                # Loch folgt der Wölbung, wenn die Mitte mehr als dieser Anteil des Durchmessers von der Randebene abweicht
+CURVED_FIT = 0.02                                                # ... und der Paraboloid die Umgebung mit höchstens diesem Fehler (Anteil des Durchmessers) trifft
+CURVED_RINGS = (2 / 3, 1 / 3)                                    # Zwischenringe der gewölbten Füllung (Anteil des Abstands zur Mitte)
 HOLE_PLANAR = 0.02                                               # Loch gilt als eben, wenn kein Randpunkt weiter als dieser Anteil des Durchmessers von der Ebene liegt
 
 
@@ -152,7 +157,7 @@ def parse_obj(data):
         elif tag == "g":
             cur["grp"] = rest
         elif tag == "usemtl":
-            cur["mat"] = rest or None
+            cur["mat"] = None if rest in ("", "off") else rest          # "usemtl off" heisst: kein Material
         elif tag == "s":
             cur["smooth"] = rest
         elif tag == "mtllib":
@@ -234,8 +239,8 @@ def obj_text(sc):
         if f.grp != cur["grp"]:
             lines.append("g " + f.grp if f.grp else "g")
             cur["grp"] = f.grp
-        if f.mat != cur["mat"] and f.mat is not None:
-            lines.append("usemtl " + f.mat)
+        if f.mat != cur["mat"]:
+            lines.append("usemtl " + (f.mat if f.mat is not None else "off"))   # ohne diese Zeile erbte die Flaeche das Material davor
             cur["mat"] = f.mat
         if f.smooth != cur["smooth"]:
             lines.append("s " + (f.smooth or "off"))
@@ -360,22 +365,24 @@ def find_regions(sc):
                 d.setdefault(k, []).append(i)
         for name, faces in d.items():
             groups.append((kind, name, faces))
-    cand, seen = [], set()
+    cand, seen, also = [], {}, {}
     for kind, name, faces in groups:
         if len(faces) == n:                                       # das ganze Netz ist nichts zum Auswaehlen
             continue
         key = tuple(faces)
         if key in seen:
+            if name:                                              # dieselben Flaechen unter anderem Namen: der Name zeigt auf das fruehere Element
+                also.setdefault(seen[key], []).append({"kind": kind, "name": name})
             continue
-        seen.add(key)
+        seen[key] = len(cand)
         cand.append((kind, name, faces))
     if len(cand) > MAX_REGIONS:                                   # die groessten bleiben, in ihrer Reihenfolge
         keep = sorted(sorted(range(len(cand)), key=lambda i: -len(cand[i][2]))[:MAX_REGIONS])
         cand = [cand[i] for i in keep]
-    regions = [dict(id=i + 1, kind=k, name=nm, face_ids=f) for i, (k, nm, f) in enumerate(cand)]
+    regions = [dict(id=i + 1, kind=k, name=nm, face_ids=f, also=also.get(i, [])) for i, (k, nm, f) in enumerate(cand)]
     omitted = len(seen) - len(cand)
     smallest = np.zeros(n, dtype=np.int64)                        # je Flaeche das kleinste Element, das sie enthaelt (das waehlt --at)
-    for r in sorted(regions, key=lambda r: -len(r["face_ids"])):
+    for r in sorted(regions, key=lambda r: (-len(r["face_ids"]), -r["id"])):      # bei gleicher Groesse gewinnt die kleinere Nummer (wie choose_region)
         smallest[r["face_ids"]] = r["id"]
     for r in regions:
         r.update(region_stats(sc, pid, r["face_ids"]))
@@ -536,16 +543,22 @@ def choose_region(sc, regions, region=None, at=None, name=None):
             fail("Es gibt keine Region %d - gueltig sind 1 bis %d (siehe `meshcut regions`)." % (rid, len(regions)))
         return regions[rid - 1]
     if name not in (None, ""):
-        hit = [r for r in regions if r["name"].lower() == str(name).strip().lower()]
+        want = str(name).strip().lower()
+        hit = [r for r in regions if r["name"].lower() == want or any(a["name"].lower() == want for a in r["also"])]
         if not hit:
-            fail("Kein Element heisst '%s' - vorhanden: %s" % (str(name)[:40], ", ".join(r["name"] for r in regions[:15])))
+            names = []
+            for r in regions:
+                names += [r["name"]] + [a["name"] for a in r["also"]]
+            fail("Kein Element heisst '%s' - vorhanden: %s" % (str(name)[:40], ", ".join(names[:15])))
+        if len(hit) > 1:
+            fail("Der Name '%s' passt auf mehrere Elemente (%s) - mit --region NUMMER waehlen." % (str(name)[:40], ", ".join(str(r["id"]) for r in hit[:8])))
         return hit[0]
     p = parse_point(at)
     fi, dist = nearest_face(sc, p)
     cand = [r for r in regions if fi in set(r["face_ids"])]
     if not cand:
         fail("Am Punkt %s liegt kein auswaehlbares Element." % str(at)[:30])
-    return min(cand, key=lambda r: r["faces"])
+    return min(cand, key=lambda r: (r["faces"], r["id"]))
 
 
 # ============================================================================= Loch schliessen
@@ -597,6 +610,42 @@ def _hole_loops(sc, pid, removed):
     return loops
 
 
+def _curved_fill(sc, rloop, Pr, cen, n):
+    """Wölbungsfolgende Füllung: ein Paraboloid h(u,v) wird an den Rand und den ersten Nachbarring gefittet (kleinste Quadrate); weicht seine
+    Mitte spürbar von der Randebene ab und trifft er die Umgebung gut, entstehen zwei Zwischenringe und eine Mitte auf dieser Fläche.
+    Rückgabe: Liste von Dreiecken aus Ecken-Indizes (Ring, Nr.) oder None, wenn die Füllung flach bleiben soll."""
+    diam = float(np.linalg.norm(Pr.max(axis=0) - Pr.min(axis=0)))
+    ref_axis = np.zeros(3)
+    ref_axis[int(np.argmin(np.abs(n)))] = 1.0
+    u = np.cross(n, ref_axis)
+    u /= np.linalg.norm(u)
+    v = np.cross(n, u)
+    rel = Pr - cen
+    uv = np.stack([rel @ u, rel @ v], axis=1)
+    ang = np.unwrap(np.arctan2(uv[:, 1], uv[:, 0]))
+    if len(Pr) < 6 or not (np.all(np.diff(ang) > 0) and float(ang[-1] - ang[0]) < 2 * math.pi):
+        return None                                               # nicht sternfoermig um die Mitte: die Zwischenringe wuerden sich ueberlappen
+    pts = [Pr]
+    for x in rloop:                                               # erster Nachbarring: die uebrigen Ecken der anliegenden Restflaechen
+        pts.append(sc.V[[c[0] for c in sc.faces[x[4]].c]])
+    P = np.vstack(pts)
+    r = P - cen
+    A = np.stack([np.ones(len(P)), r @ u, r @ v, (r @ u) ** 2, (r @ u) * (r @ v), (r @ v) ** 2], axis=1)
+    w = r @ n
+    if np.linalg.matrix_rank(A) < 6:
+        return None
+    coef, *_ = np.linalg.lstsq(A, w, rcond=None)
+    if float(np.sqrt(np.mean((A @ coef - w) ** 2))) > CURVED_FIT * diam:
+        return None
+
+    def h(a, b):
+        return coef[0] + coef[1] * a + coef[2] * b + coef[3] * a * a + coef[4] * a * b + coef[5] * b * b
+    hb = np.array([h(a, b) for a, b in uv])
+    if abs(float(h(0.0, 0.0)) - float(hb.mean())) < CURVED_MIN * diam:
+        return None
+    return {"u": u, "v": v, "uv": uv, "h": h, "hb": hb}
+
+
 def close_holes(sc, pid, removed):
     """Schliesst die Loecher, die das Entfernen hinterlaesst. Rueckgabe: (neue Flaechen, Anzahl geschlossener Loecher)."""
     loops = _hole_loops(sc, pid, removed)
@@ -615,8 +664,10 @@ def close_holes(sc, pid, removed):
         ref = sc.faces[max(faces_adj, key=lambda fi: mats[sc.faces[fi].mat])]
         has_n = sc.has_normals()
         tris, flat = None, False
+        curved = None
         if nl > 0 and diam > 0:
             n = n / nl
+            curved = _curved_fill(sc, rloop, Pr, cen, n)
             flat = float(np.abs((Pr - cen) @ n).max()) <= HOLE_PLANAR * diam
             if flat:
                 ref_axis = np.zeros(3)
@@ -636,7 +687,9 @@ def close_holes(sc, pid, removed):
                     if qe < SLIVER and qf > 3 * qe:
                         tris = None
         vn_flat = sc.add_vn(n) if (tris is not None and has_n) else -1
-        if tris is not None:
+        if curved is not None:
+            new += _fill_with_rings(sc, rloop, Pr, cen, n, curved, ref, has_n)
+        elif tris is not None:
             for a, b, c in tris:
                 corners = []
                 for k in (a, b, c):
@@ -658,6 +711,41 @@ def close_holes(sc, pid, removed):
                 new.append(Face([(a[1], a[2], vn), (b[1], b[2], vn), (ci, cvt, vn)], ref.mat, ref.obj, ref.grp, ""))
         closed += 1
     return new, closed
+
+
+def _fill_with_rings(sc, rloop, Pr, cen, n, cv, ref, has_n):
+    """Baut die gewölbte Füllung: Randring -> zwei Zwischenringe -> Mitte, Höhen aus dem gefitteten Paraboloid."""
+    m = len(rloop)
+    uvs = [sc.vt[x[2]] for x in rloop if x[2] >= 0]
+    have_uv = len(uvs) == m
+    if have_uv:
+        arr = np.array([[float(t) for t in s.split()[:2]] for s in uvs])
+        uvc = arr.mean(axis=0)
+    rings = [[(x[1], x[2]) for x in rloop]]
+    for f in CURVED_RINGS:
+        ring = []
+        for k in range(m):
+            a, b = f * cv["uv"][k, 0], f * cv["uv"][k, 1]
+            pos = cen + a * cv["u"] + b * cv["v"] + float(cv["h"](a, b)) * n
+            ring.append((sc.add_vertex(pos), sc.add_vt(uvc + f * (arr[k] - uvc)) if have_uv else -1))
+        rings.append(ring)
+    centre = (sc.add_vertex(cen + float(cv["h"](0.0, 0.0)) * n), sc.add_vt(uvc) if have_uv else -1)
+    out = []
+
+    def tri(a, b, c):
+        tn = np.cross(sc.V[b[0]] - sc.V[a[0]], sc.V[c[0]] - sc.V[a[0]])
+        tl = float(np.linalg.norm(tn))
+        vn = sc.add_vn(tn / tl) if (has_n and tl > 0) else -1
+        out.append(Face([(a[0], a[1], vn), (b[0], b[1], vn), (c[0], c[1], vn)], ref.mat, ref.obj, ref.grp, ""))
+    for r in range(len(rings) - 1):
+        for k in range(m):
+            k2 = (k + 1) % m
+            tri(rings[r][k], rings[r][k2], rings[r + 1][k2])
+            tri(rings[r][k], rings[r + 1][k2], rings[r + 1][k])
+    last = rings[-1]
+    for k in range(m):
+        tri(last[k], last[(k + 1) % m], centre)
+    return out
 
 
 # ============================================================================= Grundkoerper
@@ -880,19 +968,39 @@ def _copy_mtl(src_scene, src_path, dst_path):
     return note
 
 
-def _write_and_check(sc_new, src_scene, kept_ids, dst, note_lines):
-    """Schreibt, liest die Datei zurueck und vergleicht: die behaltenen Flaechen muessen in gleicher Reihenfolge und mit gleichem Text
-    am Anfang stehen. Rueckgabe: (Anzahl unveraenderter Flaechen, Prueftext)."""
-    fmt = mc.detect_format(dst)
-    mc.save_atomic(scene_bytes(sc_new, fmt), dst)
+def _verify_written(sc_new, src_scene, kept_ids, dst, fmt):
+    """Liest die geschriebene Datei zurueck. OBJ: behaltene Flaechen am Anfang gleich (Eckpunkt, UV, Normale, Material), neue Flaechen mit dem
+    beabsichtigten Material und endlichen Koordinaten. Andere Formate: Dreieckszahl und endliche Koordinaten. Rueckgabe: (unveraenderte, neue Dreiecke)."""
+    n_kept = src_scene.n_triangles(kept_ids)
+    n_new = sc_new.n_triangles(range(len(kept_ids), len(sc_new.faces)))
     if fmt != "obj":
+        back = read_scene(dst)
+        if not np.isfinite(back.V).all() or back.n_triangles() != n_kept + n_new:
+            fail("Selbstpruefung fehlgeschlagen: die geschriebene Datei hat nicht die erwarteten Dreiecke (%s)." % dst)
         return None
     back = parse_obj(Path(dst).read_bytes())
     want = [src_scene.signature(src_scene.faces[i]) for i in kept_ids]
     got = [back.signature(f) for f in back.faces[:len(kept_ids)]]
     if got != want or len(back.faces) != len(sc_new.faces):
         fail("Selbstpruefung fehlgeschlagen: die unberuehrten Flaechen weichen im geschriebenen Ergebnis vom Original ab (%s)." % dst)
-    return len(kept_ids)
+    fresh_back, fresh = back.faces[len(kept_ids):], sc_new.faces[len(kept_ids):]
+    if not np.isfinite(back.V).all() or [f.mat for f in fresh_back] != [f.mat for f in fresh] or sum(len(f.c) - 2 for f in fresh_back) != n_new:
+        fail("Selbstpruefung fehlgeschlagen: die neuen Flaechen sind in der Datei nicht wie vorgesehen (Material, Zahlen) (%s)." % dst)
+    return n_kept, n_new
+
+
+def _write_and_check(sc_new, src_scene, kept_ids, dst):
+    """Schreibt und prueft das Ergebnis durch Zuruecklesen (siehe _verify_written); bei einem Fehler wird die Ausgabe wieder entfernt."""
+    fmt = mc.detect_format(dst)
+    mc.save_atomic(scene_bytes(sc_new, fmt), dst)
+    try:
+        return _verify_written(sc_new, src_scene, kept_ids, dst, fmt)
+    except BaseException:
+        try:
+            Path(dst).unlink()
+        except OSError:
+            pass
+        raise
 
 
 def edit_scene(sc, region, mode, shape="auto", axis="auto", scale=1.0, material=None, close=True):
@@ -945,6 +1053,15 @@ def edit_scene(sc, region, mode, shape="auto", axis="auto", scale=1.0, material=
     return out, kept, report
 
 
+def _check_numbers(a):
+    sc = getattr(a, "scale", None)
+    if sc is not None and not (isinstance(sc, (int, float)) and not isinstance(sc, bool) and math.isfinite(sc) and SCALE_RANGE[0] <= sc <= SCALE_RANGE[1]):
+        fail("--scale muss eine Zahl zwischen %g und %g sein." % SCALE_RANGE)
+    sz = getattr(a, "size", None)
+    if sz is not None and not (isinstance(sz, int) and not isinstance(sz, bool) and SIZE_RANGE[0] <= sz <= SIZE_RANGE[1]):
+        fail("--size muss eine ganze Zahl zwischen %d und %d sein." % SIZE_RANGE)
+
+
 def _check_material(m):
     if m is not None and (not m.strip() or len(m) > 128 or any(ord(ch) < 32 or ord(ch) == 127 for ch in m)):
         fail("Material: ein Name ohne Zeilenumbruch und Steuerzeichen, hoechstens 128 Zeichen.")
@@ -952,16 +1069,16 @@ def _check_material(m):
 
 def _run_edit(a, mode):
     _check_material(getattr(a, "material", None))
+    _check_numbers(a)
     sc = read_scene(a.input)
     regions = find_regions(sc)
     r = choose_region(sc, regions, a.region, a.at, a.name)
     dst = _out_path(a.input, a.out)
     new, kept, rep = edit_scene(sc, r, mode, getattr(a, "shape", "auto"), getattr(a, "axis", "auto"), getattr(a, "scale", 1.0),
                                 getattr(a, "material", None))
-    same = _write_and_check(new, sc, kept, dst, [])
+    same = _write_and_check(new, sc, kept, dst)
     mtl = _copy_mtl(sc, a.input, dst) if mc.detect_format(dst) == "obj" else []
     total = sc.n_triangles()
-    kept_tri = sc.n_triangles(kept)
     mc.say("%s %d (%s, %d Dreiecke) %s." % ("Entfernt: Region" if mode == "remove" else "Ersetzt: Region", r["id"], r["name"], rep["entfernte_dreiecke"],
                                             "entfernt" if mode == "remove" else "durch " + rep["ersatz"]))
     if rep["kandidaten"]:
@@ -971,10 +1088,10 @@ def _run_edit(a, mode):
     if rep["loecher_geschlossen"]:
         mc.say("Loch geschlossen (%d Rand%s), Material und UV der Umgebung uebernommen." % (rep["loecher_geschlossen"], "" if rep["loecher_geschlossen"] == 1 else "er"))
     if same is not None:
-        mc.say("Pruefung: von %d Dreiecken %d entfernt, %d neu dazugekommen; die uebrigen %d sind unveraendert (Eckpunkt, UV, Normale, Material verglichen)."
-               % (total, rep["entfernte_dreiecke"], rep["neue_dreiecke"], kept_tri))
+        mc.say("Pruefung (aus der geschriebenen Datei): von %d Dreiecken %d entfernt, %d neu dazugekommen; die uebrigen %d sind unveraendert (Eckpunkt, UV, Normale, Material verglichen)."
+               % (total, total - same[0], same[1], same[0]))
     else:
-        mc.say("Pruefung: von %d Dreiecken %d entfernt, %d neu dazugekommen; %s traegt nur Geometrie (keine Materialien, UV oder Normalen)." % (
+        mc.say("Pruefung: von %d Dreiecken %d entfernt, %d neu dazugekommen; %s wird hier nur mit Geometrie geschrieben - Farben, Materialien und UV der Eingabe gehen verloren." % (
             total, rep["entfernte_dreiecke"], rep["neue_dreiecke"], mc.detect_format(dst).upper()))
     if rep["offene_kanten_vorher"] != rep["offene_kanten_nachher"]:
         mc.say("Hinweis: offene Kanten vorher %d, nachher %d." % (rep["offene_kanten_vorher"], rep["offene_kanten_nachher"]))
@@ -986,6 +1103,7 @@ def _run_edit(a, mode):
 
 
 def cmd_regions(a):
+    _check_numbers(a)
     sc = read_scene(a.input)
     regions = find_regions(sc)
     out = Path(a.outdir)
