@@ -121,7 +121,11 @@ class Scene:
     def signature(self, f):
         """Wert einer Flaeche unabhaengig von Nummern: Text von Eckpunkt/UV/Normale je Ecke plus Material, Objekt, Gruppe, Glaettung."""
         return (tuple((self.vtext[v], self.vt[t] if t >= 0 else "", self.vn[n] if n >= 0 else "") for v, t, n in f.c),
-                f.mat, f.obj, f.grp, f.smooth)
+                self.raw_name(f.mat), self.raw_name(f.obj), self.raw_name(f.grp), f.smooth)
+
+    def raw_name(self, name):
+        """Ein Name als die Bytes, die in der Datei stehen: so sind Namen vor und nach dem Schreiben vergleichbar, auch wenn die Ausgabe (anders als die Eingabe) reines UTF-8 ist."""
+        return _encode_text(name, self.escaped) if name else name
 
 
 ESCAPE_MARK = "\uf700"
@@ -175,7 +179,7 @@ def parse_obj(data):
         if not q:
             continue
         tag = q[0]
-        rest = ln.strip()[len(tag):].strip()
+        rest = ln.strip(" \t")[len(tag):].strip(" \t")
         if tag == "v":
             try:
                 verts.append((float(q[1]), float(q[2]), float(q[3])))
@@ -407,7 +411,7 @@ def region_stats(sc, pid, face_ids):
         mats[m] = mats.get(m, 0.0) + float(area_f[j])
     return {"faces": int(len(fid)), "triangles": int(sc.n_triangles(fid)), "area": float(area_f.sum()), "closed": closed,
             "volume": vol, "bbox": {"min": lo.tolist(), "max": hi.tolist()}, "center": ((lo + hi) / 2).tolist(), "point": point.tolist(),
-            "materials": [m for m, _ in sorted(mats.items(), key=lambda kv: -kv[1]) if m]}
+            "materials": [_plain(m) if sc.escaped else m for m, _ in sorted(mats.items(), key=lambda kv: -kv[1]) if m]}
 
 
 def find_regions(sc):
@@ -1160,14 +1164,14 @@ def _plain_file(p):
 def _mtl_textures(path, limit=1_000_000):
     """Dateinamen der Texturen einer .mtl (map_Kd, bump ...): nur schlichte Namen neben der Datei, nichts mit Pfad."""
     try:
-        text = Path(path).read_bytes()[:limit].decode("utf-8", "replace")
+        text, escaped = _decode_text(Path(path).read_bytes()[:limit])
     except OSError:
         return []
     out = []
-    for ln in text.splitlines():
+    for ln in _LINE_BREAK.split(text):
         tok = ln.split()
         if len(tok) >= 2 and (tok[0].lower().startswith("map_") or tok[0].lower() in MTL_MAP_KEYS):
-            name = tok[-1]
+            name = _plain(tok[-1]) if escaped else tok[-1]
             if Path(name).name == name and name not in ("", ".", "..") and "/" not in name and "\\" not in name and name not in out:
                 out.append(name)
     return out
@@ -1233,7 +1237,7 @@ def _verify_written(sc_new, src_scene, kept_ids, dst, fmt):
     if got != want or len(back.faces) != len(sc_new.faces):
         fail("Selbstpruefung fehlgeschlagen: die unberuehrten Flaechen weichen im geschriebenen Ergebnis vom Original ab (%s)." % dst)
     fresh_back, fresh = back.faces[len(kept_ids):], sc_new.faces[len(kept_ids):]
-    if not np.isfinite(back.V).all() or [f.mat for f in fresh_back] != [f.mat for f in fresh] or sum(len(f.c) - 2 for f in fresh_back) != n_new:
+    if not np.isfinite(back.V).all() or [back.raw_name(f.mat) for f in fresh_back] != [sc_new.raw_name(f.mat) for f in fresh] or sum(len(f.c) - 2 for f in fresh_back) != n_new:
         fail("Selbstpruefung fehlgeschlagen: die neuen Flaechen sind in der Datei nicht wie vorgesehen (Material, Zahlen) (%s)." % dst)
     if not all(_text_finite(back.vt[c[1]]) for f in fresh_back for c in f.c if c[1] >= 0) or not all(
             _text_finite(back.vn[c[2]]) for f in fresh_back for c in f.c if c[2] >= 0):
@@ -1272,6 +1276,18 @@ def _write_and_check(sc_new, src_scene, kept_ids, dst):
         raise
 
 
+def _raw_material(sc, region):
+    """Das vorherrschende Material des Elements, so geschrieben wie in der Szene (die Liste der Elemente zeigt es als Anzeigename)."""
+    if not region["materials"]:
+        return None
+    want = region["materials"][0]
+    for i in region["face_ids"]:
+        m = sc.faces[i].mat
+        if m and ((_plain(m) if sc.escaped else m) == want):
+            return m
+    return want
+
+
 def edit_scene(sc, region, mode, shape="auto", axis="auto", scale=1.0, material=None, close=True):
     """Gemeinsamer Kern von remove und swap. Rueckgabe: (neue Szene, behaltene Flaechennummern, Bericht)."""
     pid = position_ids(sc)
@@ -1297,7 +1313,7 @@ def edit_scene(sc, region, mode, shape="auto", axis="auto", scale=1.0, material=
         half = (hi - lo) / 2 * float(scale)
         half = _min_half(half)                                           # ein flaches Element (z. B. eine Platte) ergibt keinen Ersatz mit Dicke null
         plo, phi_ = centre - half, centre + half
-        mat = material if material else (region["materials"][0] if region["materials"] else None)
+        mat = _typed(sc, material) if material else _raw_material(sc, region)
         uvs = [u for i in removed for c in sc.faces[i].c if c[1] >= 0 for u in [_uv_of(sc.vt[c[1]])] if u is not None]
         if uvs:
             arr = np.array(uvs)
@@ -1336,8 +1352,17 @@ def _check_numbers(a):
 
 
 def _check_material(m):
-    if m is not None and (not m.strip() or len(m) > 128 or any(ord(ch) < 32 or ord(ch) == 127 for ch in m)):
-        fail("Material: ein Name ohne Zeilenumbruch und Steuerzeichen, hoechstens 128 Zeichen.")
+    if m is not None and (not m.strip() or m != m.strip() or len(m) > 128
+                          or any(ord(ch) < 32 or ord(ch) == 127 or ch in "\u0085\u2028\u2029" for ch in m)):
+        fail("Material: ein Name ohne Zeilenumbruch, Steuerzeichen und Leerzeichen am Rand, hoechstens 128 Zeichen.")
+
+
+def _typed(sc, text):
+    """Ein getippter Name, so wie ihn die Szene schreibt: in einer Szene mit Nicht-UTF-8-Bytes werden Zeichen bis U+00FF wieder zu einem einzelnen Byte
+    (sonst stuende neben dem Latin-1-Material der Datei ein UTF-8-Name, der zur .mtl nicht passt)."""
+    if text is None or not sc.escaped:
+        return text
+    return "".join(chr(ESCAPE_BASE + ord(c)) if 0x80 <= ord(c) <= 0xFF else (ESCAPE_MARK + c if 0xF700 <= ord(c) <= 0xF7FF else c) for c in text)
 
 
 def _run_edit(a, mode):

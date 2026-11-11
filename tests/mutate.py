@@ -296,6 +296,14 @@ MUTANTS = [
     ('r12 edit: Zielmeldung ohne Namen', 'fail("%s ist schreibgeschuetzt oder in Benutzung." % dst)', 'fail("Die Datei ist schreibgeschuetzt oder in Benutzung.")', "kkmeshcut_edit.py"),
     ('r12 edit: mtllib roh', 'entry = _plain(entry) if src_scene.escaped else entry', 'entry = entry', "kkmeshcut_edit.py"),
     ('r12 edit: Anzeige roh', 'shown = _plain if sc.escaped else str', 'shown = str', "kkmeshcut_edit.py"),
+    ('r13 edit: BOM mit Escape', 'raw = data.decode("utf-8-sig", errors="surrogateescape")', 'raw = data.decode("utf-8", errors="surrogateescape")', "kkmeshcut_edit.py"),
+    ('r13 edit: Signatur ohne Bytes', 'self.raw_name(f.mat), self.raw_name(f.obj), self.raw_name(f.grp), f.smooth)', 'f.mat, f.obj, f.grp, f.smooth)', "kkmeshcut_edit.py"),
+    ('r13 edit: Material roh getippt', 'mat = _typed(sc, material) if material', 'mat = material if material', "kkmeshcut_edit.py"),
+    ('r13 edit: Anzeigematerial uebernommen', 'else _raw_material(sc, region)', 'else (region["materials"][0] if region["materials"] else None)', "kkmeshcut_edit.py"),
+    ('r13 edit: Materialien roh angezeigt', '[_plain(m) if sc.escaped else m for m, _ in sorted', '[m for m, _ in sorted', "kkmeshcut_edit.py"),
+    ('r13 edit: Textur roh', 'name = _plain(tok[-1]) if escaped else tok[-1]', 'name = tok[-1]', "kkmeshcut_edit.py"),
+    ('r13 edit: Material mit Randleerzeichen', 'm != m.strip() or ', '', "kkmeshcut_edit.py"),
+    ('r13 edit: Name mit strip()', 'rest = ln.strip(" \\t")[len(tag):].strip(" \\t")', 'rest = ln.strip()[len(tag):].strip()', "kkmeshcut_edit.py"),
 ]
 
 

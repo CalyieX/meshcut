@@ -1532,3 +1532,66 @@ def test_locked_target_error_names_the_target(tmp_path, monkeypatch):
     assert "o.obj" in str(e.value) and ".meshcut" not in str(e.value)
     monkeypatch.undo()
     assert out.read_bytes() == good and not [f for f in tmp_path.iterdir() if f.name.startswith(".meshcut")]
+
+
+# ----------------------------------------------------------------------------- Spock R11
+def test_self_check_survives_real_pua_name_next_to_a_latin1_object(tmp_path):
+    """Objekt A heisst mit einem echten U+F7E9, Objekt B hat ein Latin-1-Byte: Entfernt man B, ist die Ausgabe reines UTF-8 - die Pruefung darf nicht anschlagen."""
+    lines = ["v 0 0 0", "v 1 0 0", "v 0 1 0", "v 5 5 5", "v 6 5 5", "v 5 6 5"]
+    data = ("\n".join(lines) + "\no A\uf7e9\nf 1 2 3\no B").encode("utf-8") + b"\xe9\nf 4 5 6\n"
+    p = tmp_path / "m.obj"
+    p.write_bytes(data)
+    out = tmp_path / "o.obj"
+    mc.remove(p, region=2, out=out)
+    assert "A\uf7e9".encode("utf-8") in out.read_bytes()
+
+
+def test_bom_with_latin1_bytes_keeps_the_first_vertex(tmp_path):
+    data = b"\xef\xbb\xbfv 0 0 0\nv 1 0 0\nv 0 1 0\nv 5 5 5\nv 6 5 5\nv 5 6 5\no caf\xe9\nf 1 2 3\no B\nf 4 5 6\n"
+    sc = ed.parse_obj(data)
+    assert len(sc.V) == 6 and sc.escaped
+
+
+def test_typed_material_in_a_latin1_scene_is_written_as_the_same_byte(tmp_path):
+    p = tmp_path / "l.obj"
+    p.write_bytes(b"mtllib m.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nv 5 5 5\nv 6 5 5\nv 5 6 5\nusemtl r\xe9d\no A\nf 1 2 3\nusemtl b\no B\nf 4 5 6\n")
+    sc = ed.read_scene(p)
+    regs = ed.find_regions(sc)
+    out, kept, _ = ed.edit_scene(sc, regs[1], "swap", material="r\u00e9d")
+    data = ed.obj_text(out)
+    assert data.count(b"usemtl r\xe9d") >= 1 and b"r\xc3\xa9d" not in data
+
+
+def test_region_materials_are_shown_plain_and_swap_keeps_the_raw_name(tmp_path):
+    p = tmp_path / "l.obj"
+    p.write_bytes(b"v 0 0 0\nv 1 0 0\nv 0 1 0\nv 5 5 5\nv 6 5 5\nv 5 6 5\nusemtl r\xe9d\no A\nf 1 2 3\nusemtl b\no B\nf 4 5 6\n")
+    sc = ed.read_scene(p)
+    regs = ed.find_regions(sc)
+    assert "r\u00e9d" in regs[0]["materials"]
+    out, kept, _ = ed.edit_scene(sc, regs[0], "swap")
+    assert ed.obj_text(out).count(b"usemtl r\xe9d") >= 1
+
+
+def test_mtl_texture_with_a_latin1_name_is_copied(tmp_path):
+    work = tmp_path / "in"
+    work.mkdir()
+    p = work / "o.obj"
+    p.write_bytes(b"mtllib m.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nv 5 5 5\nv 6 5 5\nv 5 6 5\no A\nf 1 2 3\no B\nf 4 5 6\n")
+    (work / "m.mtl").write_bytes(b"newmtl x\nmap_Kd t\xe9x.png\n")
+    (work / "t\u00e9x.png").write_bytes(b"P")
+    dst = tmp_path / "out"
+    dst.mkdir()
+    mc.remove(p, region=2, out=dst / "o.obj")
+    assert (dst / "t\u00e9x.png").exists()
+
+
+@pytest.mark.parametrize("bad", [" a", "a ", "a\u2028b", "a\u00a0", "a\u0085b"])
+def test_material_option_refuses_edge_spaces_and_line_separators(bad):
+    with pytest.raises(mc.MeshcutError):
+        ed._check_material(bad)
+
+
+def test_names_keep_a_trailing_nbsp(tmp_path):
+    p = tmp_path / "n.obj"
+    p.write_bytes("v 0 0 0\nv 1 0 0\nv 0 1 0\no a\u00a0\nf 1 2 3\n".encode("utf-8"))
+    assert ed.read_scene(p).faces[0].obj == "a\u00a0"
