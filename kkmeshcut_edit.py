@@ -11,6 +11,7 @@ import colorsys
 import json
 import math
 import os
+import re
 import shutil
 import struct
 import uuid
@@ -123,33 +124,43 @@ class Scene:
                 f.mat, f.obj, f.grp, f.smooth)
 
 
-ESCAPE_BASE = 0xF700                                               # Bytes ab 0x80 ausserhalb von UTF-8 werden zu U+F780..U+F7FF (druckbar, JSON-sicher) und beim Schreiben zurueckverwandelt
-
-
-def _escape_bytes(exc):
-    if not isinstance(exc, UnicodeDecodeError):
-        raise exc
-    return "".join(chr(ESCAPE_BASE + b) for b in exc.object[exc.start:exc.end]), exc.end
-
-
-codecs.register_error("meshcut-escape", _escape_bytes)
+ESCAPE_MARK = "\uf700"
+ESCAPE_BASE = 0xF700                                               # Bytes ab 0x80 ausserhalb von UTF-8 werden zu U+F780..U+F7FF (druckbar, JSON-sicher);
+_ESCAPE_TABLE = {0xDC00 + b: chr(ESCAPE_BASE + b) for b in range(0x80, 0x100)}      # echte Zeichen U+F700..U+F7FF bekommen dann U+F700 vorangestellt
+_ESCAPE_PAIR = re.compile("\uf700([\uf700-\uf7ff])|([\uf780-\uf7ff])")
 
 
 def _decode_text(data):
     """OBJ-Text: UTF-8 (mit oder ohne BOM). Bytes, die kein UTF-8 sind (Latin-1-Namen aus alten Exportern), bleiben erhalten und gehen unveraendert
-    wieder hinaus, statt zu U+FFFD zu verschmelzen. Rueckgabe: (Text, ob solche Bytes vorkamen)."""
+    wieder hinaus, statt zu U+FFFD zu verschmelzen (umkehrbar, auch wenn der Text echte Zeichen aus dem Bereich U+F700..U+F7FF enthaelt).
+    Rueckgabe: (Text, ob solche Bytes vorkamen)."""
     try:
         return data.decode("utf-8-sig"), False
     except UnicodeDecodeError:
-        return data.decode("utf-8-sig", errors="meshcut-escape"), True
+        raw = data.decode("utf-8-sig", errors="surrogateescape")
+        raw = re.sub("[\uf700-\uf7ff]", lambda m: ESCAPE_MARK + m.group(0), raw)
+        return raw.translate(_ESCAPE_TABLE), True
 
 
 def _encode_text(text, escaped):
-    data = text.encode("utf-8")
-    if escaped:
-        for b in range(0x80, 0x100):
-            data = data.replace(chr(ESCAPE_BASE + b).encode("utf-8"), bytes([b]))
-    return data
+    if not escaped:
+        return text.encode("utf-8")
+    out, pos = [], 0
+    for m in _ESCAPE_PAIR.finditer(text):
+        out.append(text[pos:m.start()].encode("utf-8"))
+        out.append(m.group(1).encode("utf-8") if m.group(1) else bytes([ord(m.group(2)) - ESCAPE_BASE]))
+        pos = m.end()
+    out.append(text[pos:].encode("utf-8"))
+    return b"".join(out)
+
+
+def _plain(name):
+    """Name zum Anzeigen und Vergleichen: eingeschmuggelte Bytes als Latin-1-Zeichen (so liest sie fast jeder alte Exporter), Markierungen entfernt."""
+    name = _ESCAPE_PAIR.sub(lambda m: m.group(1) if m.group(1) else chr(ord(m.group(2)) - ESCAPE_BASE), name)
+    return name
+
+
+_LINE_BREAK = re.compile("\r\n|\r|\n")                              # nur diese trennen OBJ-Zeilen (nicht U+2028, U+0085, \x0b, \x0c wie bei splitlines)
 
 
 def parse_obj(data):
@@ -159,7 +170,7 @@ def parse_obj(data):
     cur = {"mat": None, "obj": "", "grp": "", "smooth": ""}
     n_tri = 0
     text, sc.escaped = _decode_text(data)
-    for ln in text.splitlines():
+    for ln in _LINE_BREAK.split(text):
         q = ln.split()
         if not q:
             continue
@@ -402,6 +413,7 @@ def region_stats(sc, pid, face_ids):
 def find_regions(sc):
     """Alle unterscheidbaren Elemente: zusammenhaengende Teile, Objekte, Gruppen, Materialien. Nummern ab 1, in dieser Reihenfolge;
     ein Element, das genau dieselben Flaechen hat wie ein frueheres, kommt nicht doppelt vor."""
+    shown = _plain if sc.escaped else str                          # Anzeigename: eingeschmuggelte Bytes als Latin-1-Zeichen
     pid = position_ids(sc)
     n = len(sc.faces)
     lab = component_labels(sc, pid)
@@ -426,14 +438,14 @@ def find_regions(sc):
         key = tuple(faces)
         if key in seen:
             if name:                                              # dieselben Flaechen unter anderem Namen: der Name zeigt auf das fruehere Element
-                also.setdefault(seen[key], []).append({"kind": kind, "name": name})
+                also.setdefault(seen[key], []).append({"kind": kind, "name": shown(name)})
             continue
         seen[key] = len(cand)
         cand.append((kind, name, faces))
     if len(cand) > MAX_REGIONS:                                   # die groessten bleiben, in ihrer Reihenfolge
         keep = sorted(sorted(range(len(cand)), key=lambda i: -len(cand[i][2]))[:MAX_REGIONS])
         cand = [cand[i] for i in keep]
-    regions = [dict(id=i + 1, kind=k, name=nm, face_ids=f, also=also.get(i, [])) for i, (k, nm, f) in enumerate(cand)]
+    regions = [dict(id=i + 1, kind=k, name=shown(nm), face_ids=f, also=also.get(i, [])) for i, (k, nm, f) in enumerate(cand)]
     omitted = len(seen) - len(cand)
     smallest = np.zeros(n, dtype=np.int64)                        # je Flaeche das kleinste Element, das sie enthaelt (das waehlt --at)
     for r in sorted(regions, key=lambda r: (-len(r["face_ids"]), -r["id"])):      # bei gleicher Groesse gewinnt die kleinere Nummer (wie choose_region)
@@ -1114,6 +1126,7 @@ def _copy_mtl(src_scene, src_path, dst_path):
     note = []
     names = []
     for entry in src_scene.mtllib:                                   # "mtllib a.mtl b.mtl" nennt zwei Dateien; ein Name mit Leerzeichen bleibt ganz, wenn es ihn gibt
+        entry = _plain(entry) if src_scene.escaped else entry
         names += [entry] if _plain_file(Path(src_path).resolve().parent / entry) else entry.split()
     for m in names:
         if Path(m).name != m or m in ("", ".", ".."):                # nur ein Dateiname neben der OBJ: nichts aus der Datei darf Pfade bestimmen
@@ -1246,7 +1259,10 @@ def _write_and_check(sc_new, src_scene, kept_ids, dst):
     mc.save_atomic(scene_bytes(sc_new, fmt), stage)
     try:
         report = _verify_written(sc_new, src_scene, kept_ids, stage, fmt)
-        os.replace(stage, dst)
+        try:
+            os.replace(stage, dst)
+        except OSError:
+            fail("%s ist schreibgeschuetzt oder in Benutzung." % dst)
         return report
     except BaseException:
         try:

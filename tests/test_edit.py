@@ -1,6 +1,7 @@
 """regions / remove / swap / tools: Elemente waehlen, entfernen, ersetzen - mit Material, UV und Normalen, und die Pruefung am Ende."""
 import json
 import math
+import os
 from pathlib import Path
 
 import numpy as np
@@ -1448,3 +1449,86 @@ def test_swap_replacement_covers_the_uv_box_of_the_original(tmp_path):
     out, kept, _ = ed.edit_scene(sc, regs[1], "swap")
     new = np.array([[float(x) for x in out.vt[c[1]].split()[:2]] for f in out.faces[len(kept):] for c in f.c if c[1] >= 0])
     assert np.allclose(new.min(axis=0), orig.min(axis=0)) and np.allclose(new.max(axis=0), orig.max(axis=0))
+
+
+# ----------------------------------------------------------------------------- Spock R10
+def _scene_with_names(tmp_path, obj_a, obj_b, mtllib="m.mtl"):
+    lines = ["mtllib " + mtllib, "v 0 0 0", "v 1 0 0", "v 0 1 0", "v 5 5 5", "v 6 5 5", "v 5 6 5", "o " + obj_a, "f 1 2 3", "o " + obj_b, "f 4 5 6"]
+    return ("\n".join(lines) + "\n")
+
+
+def test_real_private_use_characters_survive_next_to_latin1_bytes(tmp_path):
+    """Gemischt: ein Latin-1-Byte und ein echtes (gueltig kodiertes) Zeichen U+F7E9 - beides kommt unveraendert zurueck."""
+    text = _scene_with_names(tmp_path, "caf\u00e9", "Z\uf7e9\uf700")
+    data = text.encode("latin-1", errors="replace").replace(b"caf?", b"caf\xe9")
+    data = data.replace(b"Z?", "Z\uf7e9\uf700".encode("utf-8")).replace(b"?", b"")
+    p = tmp_path / "mix.obj"
+    p.write_bytes(data)
+    out = tmp_path / "o.obj"
+    mc.remove(p, name="Z\uf7e9\uf700", out=out)
+    got = out.read_bytes()
+    assert b"o caf\xe9" in got and "Z\uf7e9".encode("utf-8") not in got
+
+
+def test_valid_utf8_with_private_use_characters_is_untouched(tmp_path):
+    p = tmp_path / "pua.obj"
+    p.write_bytes(_scene_with_names(tmp_path, "A\uf7e9", "B").encode("utf-8"))
+    out = tmp_path / "o.obj"
+    mc.remove(p, name="B", out=out)
+    assert "o A\uf7e9".encode("utf-8") in out.read_bytes()
+
+
+def test_escape_round_trip_is_exact_for_all_bytes():
+    raw = bytes(range(0x80, 0x100)) + "x\uf700\uf780\uf7ffy".encode("utf-8") + b"\xe9"
+    text, esc = ed._decode_text(raw)
+    assert esc and ed._encode_text(text, esc) == raw
+
+
+def test_latin1_region_name_can_be_used_as_shown(tmp_path):
+    p = tmp_path / "l.obj"
+    p.write_bytes(_scene_with_names(tmp_path, "caf\u00e9", "B").encode("latin-1"))
+    sc = ed.read_scene(p)
+    regs = ed.find_regions(sc)
+    assert any("café" in [r["name"]] + [x["name"] for x in r["also"]] for r in regs)
+    out = tmp_path / "o.obj"
+    mc.remove(p, name="caf\u00e9", out=out)
+    assert out.exists()
+
+
+def test_latin1_mtllib_file_is_copied_along(tmp_path):
+    work = tmp_path / "in"
+    work.mkdir()
+    p = work / "l.obj"
+    p.write_bytes(_scene_with_names(tmp_path, "A", "B", mtllib="caf\u00e9.mtl").encode("latin-1"))
+    (work / "caf\u00e9.mtl").write_text("newmtl x\n")
+    dst = tmp_path / "out"
+    dst.mkdir()
+    mc.remove(p, name="B", out=dst / "o.obj")
+    assert (dst / "caf\u00e9.mtl").exists()
+
+
+@pytest.mark.parametrize("sep", ["\u2028", "\x0b", "\x0c", "\u0085"])
+def test_unusual_line_separators_do_not_cut_a_name(tmp_path, sep):
+    p = tmp_path / "s.obj"
+    p.write_bytes(_scene_with_names(tmp_path, "a" + sep + "b", "B").encode("utf-8"))
+    sc = ed.read_scene(p)
+    assert any(f.obj == "a" + sep + "b" for f in sc.faces)
+
+
+def test_locked_target_error_names_the_target(tmp_path, monkeypatch):
+    out = tmp_path / "o.obj"
+    mc.remove(scene_obj(tmp_path), region=2, out=out)
+    good = out.read_bytes()
+
+    real = os.replace
+
+    def locked(a, b):
+        if Path(b) == out:
+            raise PermissionError("in Benutzung")
+        return real(a, b)
+    monkeypatch.setattr(ed.os, "replace", locked)
+    with pytest.raises(mc.MeshcutError) as e:
+        mc.remove(scene_obj(tmp_path), region=2, out=out)
+    assert "o.obj" in str(e.value) and ".meshcut" not in str(e.value)
+    monkeypatch.undo()
+    assert out.read_bytes() == good and not [f for f in tmp_path.iterdir() if f.name.startswith(".meshcut")]

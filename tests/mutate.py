@@ -269,9 +269,9 @@ MUTANTS = [
     ('r9 edit: Flaechenvergleich weg', 'if abs(got_area - want_area) > (GEOMETRY_TOLERANCE + 4 * slack) * max(want_area, 1e-300) or max(', 'if False or max(', "kkmeshcut_edit.py"),
     ('r9 edit: Rahmenvergleich weg', '(GEOMETRY_TOLERANCE + slack) * diag:\n        fail("Selbstpruefung fehlgeschlagen: Flaeche oder', '(GEOMETRY_TOLERANCE + slack) * diag * 1e9:\n        fail("Selbstpruefung fehlgeschlagen: Flaeche oder', "kkmeshcut_edit.py"),
     ('r9 kern: verify ohne Hinweis', 'skipped = "" if has_cap else "ohne Deckel nicht geprueft: "', 'skipped = ""', "kkmeshcut.py"),
-    ('r10 edit: Latin-1 verschmilzt', 'errors="meshcut-escape"', 'errors="replace"', "kkmeshcut_edit.py"),
+    ('r10 edit: Latin-1 verschmilzt', 'raw = data.decode("utf-8-sig", errors="surrogateescape")', 'raw = data.decode("utf-8-sig", errors="replace")', "kkmeshcut_edit.py"),
     ('r10 edit: BOM bleibt', 'return data.decode("utf-8-sig"), False', 'return data.decode("utf-8"), False', "kkmeshcut_edit.py"),
-    ('r10 edit: Ziel sofort ersetzt', 'os.replace(stage, dst)\n        return report', 'return report', "kkmeshcut_edit.py"),
+    ('r10 edit: Ziel sofort ersetzt', '            os.replace(stage, dst)', '            pass', "kkmeshcut_edit.py"),
     ('r10 edit: Naht nicht entwirrt', 'if shift == 0:  ', 'if False:  ', "kkmeshcut_edit.py"),
     ('r10 edit: Naht immer entwirrt', 'if shift == 0:  ', 'if True:  ', "kkmeshcut_edit.py"),
     ('r10 edit: float32-Spielraum weg', 'slack = 8 * FLOAT32_EPS * far / diag', 'slack = 0.0', "kkmeshcut_edit.py"),
@@ -289,7 +289,13 @@ MUTANTS = [
     ('r11 edit: feste Staging-Datei', 'stage = dst.with_name(".meshcut-%s%s" % (uuid.uuid4().hex[:10], dst.suffix))', 'stage = dst.with_name(".meshcut-pruefung-" + dst.name)', "kkmeshcut_edit.py"),
     ('r11 edit: vn nicht geprueft', '_text_finite(back.vn[c[2]]) for f in fresh_back for c in f.c if c[2] >= 0)', '_text_finite(back.vn[c[2]]) for f in fresh_back for c in f.c if False)', "kkmeshcut_edit.py"),
     ('r11 edit: Leerzeichen-mtllib geteilt', 'names += [entry] if _plain_file(Path(src_path).resolve().parent / entry) else entry.split()', 'names += entry.split()', "kkmeshcut_edit.py"),
-    ('r11 edit: Texte nicht zurueckverwandelt', 'data = data.replace(chr(ESCAPE_BASE + b).encode("utf-8"), bytes([b]))', 'pass', "kkmeshcut_edit.py"),
+    ('r11 edit: Texte nicht zurueckverwandelt', 'out.append(m.group(1).encode("utf-8") if m.group(1) else bytes([ord(m.group(2)) - ESCAPE_BASE]))', 'out.append(b"?")', "kkmeshcut_edit.py"),
+    ('r12 edit: Escape immer', '    if not escaped:\n        return text.encode("utf-8")', '    if False:\n        return text.encode("utf-8")', "kkmeshcut_edit.py"),
+    ('r12 edit: Markierung fehlt', 'ESCAPE_MARK + m.group(0)', 'm.group(0)', "kkmeshcut_edit.py"),
+    ('r12 edit: splitlines im Kopf', 'for ln in _LINE_BREAK.split(text):', 'for ln in text.splitlines():', "kkmeshcut_edit.py"),
+    ('r12 edit: Zielmeldung ohne Namen', 'fail("%s ist schreibgeschuetzt oder in Benutzung." % dst)', 'fail("Die Datei ist schreibgeschuetzt oder in Benutzung.")', "kkmeshcut_edit.py"),
+    ('r12 edit: mtllib roh', 'entry = _plain(entry) if src_scene.escaped else entry', 'entry = entry', "kkmeshcut_edit.py"),
+    ('r12 edit: Anzeige roh', 'shown = _plain if sc.escaped else str', 'shown = str', "kkmeshcut_edit.py"),
 ]
 
 
