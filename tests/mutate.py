@@ -266,9 +266,19 @@ MUTANTS = [
     ('r9 edit: Textur mit Pfad', 'if Path(name).name == name and name not in ("", ".", "..") and "/" not in name', 'if name not in ("", ".", "..") and True', "kkmeshcut_edit.py"),
     ('r9 edit: Polygon immer Faecher', 'if nl > 0:\n            t = _projected_ear_clip(P, cen, nv / nl)', 'if False:\n            t = _projected_ear_clip(P, cen, nv / nl)', "kkmeshcut_edit.py"),
     ('r9 edit: Viereck immer konvex', 'if n == 4 and mc._convex_quad(P):', 'if n == 4:', "kkmeshcut_edit.py"),
-    ('r9 edit: Flaechenvergleich weg', 'if abs(got_area - want_area) > GEOMETRY_TOLERANCE * max(want_area, 1e-300) or max(', 'if False or max(', "kkmeshcut_edit.py"),
-    ('r9 edit: Rahmenvergleich weg', 'GEOMETRY_TOLERANCE * diag:\n        fail("Selbstpruefung fehlgeschlagen: Flaeche oder', 'GEOMETRY_TOLERANCE * diag * 1e9:\n        fail("Selbstpruefung fehlgeschlagen: Flaeche oder', "kkmeshcut_edit.py"),
+    ('r9 edit: Flaechenvergleich weg', 'if abs(got_area - want_area) > (GEOMETRY_TOLERANCE + 4 * slack) * max(want_area, 1e-300) or max(', 'if False or max(', "kkmeshcut_edit.py"),
+    ('r9 edit: Rahmenvergleich weg', '(GEOMETRY_TOLERANCE + slack) * diag:\n        fail("Selbstpruefung fehlgeschlagen: Flaeche oder', '(GEOMETRY_TOLERANCE + slack) * diag * 1e9:\n        fail("Selbstpruefung fehlgeschlagen: Flaeche oder', "kkmeshcut_edit.py"),
     ('r9 kern: verify ohne Hinweis', 'skipped = "" if has_cap else "ohne Deckel nicht geprueft: "', 'skipped = ""', "kkmeshcut.py"),
+    ('r10 edit: Latin-1 verschmilzt', 'return data.decode("utf-8-sig", errors="surrogateescape")', 'return data.decode("utf-8-sig", errors="replace")', "kkmeshcut_edit.py"),
+    ('r10 edit: BOM bleibt', 'return data.decode("utf-8-sig")\n', 'return data.decode("utf-8")\n', "kkmeshcut_edit.py"),
+    ('r10 edit: Ziel sofort ersetzt', 'os.replace(stage, dst)\n        return report', 'return report', "kkmeshcut_edit.py"),
+    ('r10 edit: Naht nicht entwirrt', 'if shift == 0:  ', 'if False:  ', "kkmeshcut_edit.py"),
+    ('r10 edit: Naht immer entwirrt', 'if shift == 0:  ', 'if True:  ', "kkmeshcut_edit.py"),
+    ('r10 edit: float32-Spielraum weg', 'slack = 8 * FLOAT32_EPS * far / diag', 'slack = 0.0', "kkmeshcut_edit.py"),
+    ('r10 edit: mtllib nicht geteilt', 'else entry.split()', 'else [entry]', "kkmeshcut_edit.py"),
+    ('r10 edit: UV-Werte nicht geprueft', 'if not all(_text_finite(back.vt[c[1]]) for f in fresh_back for c in f.c if c[1] >= 0) or not all(', 'if False or not all(', "kkmeshcut_edit.py"),
+    ('r10 edit: keine Kandidaten-Warnung', 'if ranking and ranking[0][0] > BAD_SHAPE:', 'if False:', "kkmeshcut_edit.py"),
+    ('r10 edit: keine Flach-Warnung', 'uneven += 0 if flat else 1', 'uneven += 0', "kkmeshcut_edit.py"),
 ]
 
 

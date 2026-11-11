@@ -9,6 +9,7 @@ tragen nur Geometrie. Der exakte Schnitt (kkmeshcut.py) wird hier nicht angefass
 import colorsys
 import json
 import math
+import os
 import shutil
 import struct
 import zlib
@@ -29,6 +30,7 @@ SIZE_RANGE = (64, 4096)                                          # --size des Ue
 CURVED_MIN = 0.01                                                # Loch folgt der Wölbung, wenn die Mitte mehr als dieser Anteil des Durchmessers von der Randebene abweicht
 CURVED_FIT = 0.02                                                # ... und der Paraboloid die Umgebung mit höchstens diesem Fehler (Anteil des Durchmessers) trifft
 UV_FIT = 0.1                                                     # UV der gewoelbten Fuellung aus der Lage, wenn der Randfit hoechstens diesen Anteil der UV-Spanne danebenliegt
+BAD_SHAPE = 0.15                                                 # swap auto: ab dieser Abweichung (Anteil der Diagonale) sagt meshcut, dass keine Form gut passt
 CURVED_RINGS = (2 / 3, 1 / 3)                                    # Zwischenringe der gewölbten Füllung (Anteil des Abstands zur Mitte)
 HOLE_PLANAR = 0.02                                               # Loch gilt als eben, wenn kein Randpunkt weiter als dieser Anteil des Durchmessers von der Ebene liegt
 
@@ -118,13 +120,22 @@ class Scene:
                 f.mat, f.obj, f.grp, f.smooth)
 
 
+def _decode_text(data):
+    """OBJ-Text: UTF-8 (mit oder ohne BOM); Bytes, die kein UTF-8 sind (Latin-1-Namen aus alten Exportern), bleiben als Ersatzzeichen erhalten und gehen
+    unveraendert wieder hinaus, statt zu U+FFFD zu verschmelzen."""
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return data.decode("utf-8-sig", errors="surrogateescape")
+
+
 def parse_obj(data):
     sc = Scene()
     mc_budget = mc._ReadBudget("OBJ")
     verts, v_text = [], []
     cur = {"mat": None, "obj": "", "grp": "", "smooth": ""}
     n_tri = 0
-    for ln in data.decode("utf-8", errors="replace").splitlines():
+    for ln in _decode_text(data).splitlines():
         q = ln.split()
         if not q:
             continue
@@ -275,7 +286,7 @@ def obj_text(sc):
                 s += "//%d" % (n + 1)
             toks.append(s)
         lines.append("f " + " ".join(toks))
-    return ("\n".join(lines) + "\n").encode("utf-8")
+    return ("\n".join(lines) + "\n").encode("utf-8", errors="surrogateescape")
 
 
 def scene_bytes(sc, fmt):
@@ -696,12 +707,38 @@ def _fan_is_consistent(Pr, cen, n):
     return True
 
 
+def _unwrap_uv_seam(sc, rloop):
+    """Liegt das Loch auf einer UV-Naht (am Rand springt u oder v von fast 1 auf fast 0), bekommen die Randecken der neuen Flaechen fortlaufende UV-Werte
+    (z. B. 1,02 statt 0,02; die Textur wiederholt sich), sonst wuerde die Fuellung die ganze Textur in ein Dreieck spannen. Die vorhandenen Flaechen bleiben
+    unberuehrt: es entstehen neue vt-Eintraege nur fuer die neuen Ecken. Umschliesst der Rand die ganze Textur (Pol), bleibt es bei den Werten."""
+    if any(x[2] < 0 for x in rloop):
+        return rloop
+    arr = np.array([[float(t) for t in sc.vt[x[2]].split()[:2]] for x in rloop])
+    out = arr.copy()
+    for c in (0, 1):
+        col = arr[:, c]
+        w, shift = col.copy(), 0
+        for k in range(1, len(col)):
+            d = col[k] - col[k - 1]
+            shift += -1 if d > 0.5 else (1 if d < -0.5 else 0)
+            w[k] = col[k] + shift
+        d = col[0] - col[-1]
+        shift += -1 if d > 0.5 else (1 if d < -0.5 else 0)
+        if shift == 0:                                            # sonst laeuft der Rand einmal um die Textur: nicht entwirrbar
+            out[:, c] = w
+    if np.array_equal(out, arr):
+        return rloop
+    return [(x[0], x[1], sc.add_vt(out[k]), x[3], x[4]) for k, x in enumerate(rloop)]
+
+
 def close_holes(sc, pid, removed):
-    """Schliesst die Loecher, die das Entfernen hinterlaesst. Rueckgabe: (neue Flaechen, Anzahl geschlossener Loecher)."""
+    """Schliesst die Loecher, die das Entfernen hinterlaesst. Rueckgabe: (neue Flaechen, Anzahl geschlossener Loecher,
+    Anzahl der Loecher mit nicht ebenem Rand, die flach gefuellt wurden)."""
     loops = _hole_loops(sc, pid, removed)
-    new, closed = [], 0
+    new, closed, uneven = [], 0, 0
     for loop in loops:
         rloop = loop[::-1]                                        # Umlaufrichtung der neuen Flaechen ist die Gegenrichtung
+        rloop = _unwrap_uv_seam(sc, rloop)
         Pr = sc.V[[x[1] for x in rloop]]
         cen = Pr.mean(axis=0)
         n = np.cross(Pr - cen, np.roll(Pr, -1, axis=0) - cen).sum(axis=0)
@@ -731,6 +768,7 @@ def close_holes(sc, pid, removed):
         if curved is not None and curved["star"]:
             new += _fill_with_rings(sc, rloop, Pr, cen, n, curved, ref, has_n)
         elif tris is not None:
+            uneven += 0 if flat else 1
             vn_flat = sc.add_vn(n) if (flat and has_n) else -1
             for a_, b_, c_ in tris:
                 vn = vn_flat
@@ -753,7 +791,7 @@ def close_holes(sc, pid, removed):
                 vn = sc.add_vn(tn / tl) if (has_n and tl > 0) else -1
                 new.append(Face([(a_[1], a_[2], vn), (b_[1], b_[2], vn), (ci, cvt, vn)], ref.mat, ref.obj, ref.grp, ""))
         closed += 1
-    return new, closed
+    return new, closed, uneven
 
 
 def _fill_with_rings(sc, rloop, Pr, cen, n, cv, ref, has_n):
@@ -1021,7 +1059,10 @@ def _boundary_edges(sc, pid):
 
 def _copy_mtl(src_scene, src_path, dst_path):
     note = []
-    for m in src_scene.mtllib:
+    names = []
+    for entry in src_scene.mtllib:                                   # "mtllib a.mtl b.mtl" nennt zwei Dateien; ein Name mit Leerzeichen bleibt ganz, wenn es ihn gibt
+        names += [entry] if _plain_file(Path(src_path).resolve().parent / entry) else entry.split()
+    for m in names:
         if Path(m).name != m or m in ("", ".", ".."):                # nur ein Dateiname neben der OBJ: nichts aus der Datei darf Pfade bestimmen
             continue
         s, d = Path(src_path).resolve().parent / m, Path(dst_path).resolve().parent / m
@@ -1046,7 +1087,7 @@ def _plain_file(p):
     """Eine gewoehnliche Datei, kein Link (auch nicht auf dem Weg dorthin): so fuehrt kein Link aus dem Eingabeordner hinaus."""
     try:
         return p.is_file() and not mc.link_like(p) and p.resolve().parent == p.parent.resolve()
-    except OSError:
+    except (OSError, ValueError):
         return False
 
 
@@ -1084,6 +1125,7 @@ def directed_duplicates(sc):
 
 
 GEOMETRY_TOLERANCE = 1e-4                                          # relativ; STL und GLB speichern float32
+FLOAT32_EPS = 1.2e-7                                               # Rundung einer float32-Koordinate, relativ zu ihrem Betrag (Modelle fern vom Ursprung)
 
 
 def _check_geometry(sc_new, back, dst):
@@ -1096,7 +1138,9 @@ def _check_geometry(sc_new, back, dst):
     lo, hi = sc_new.V[used].min(axis=0), sc_new.V[used].max(axis=0)
     blo, bhi = back.V.min(axis=0), back.V.max(axis=0)
     diag = float(np.linalg.norm(hi - lo)) or 1.0
-    if abs(got_area - want_area) > GEOMETRY_TOLERANCE * max(want_area, 1e-300) or max(float(np.abs(blo - lo).max()), float(np.abs(bhi - hi).max())) > GEOMETRY_TOLERANCE * diag:
+    far = float(max(np.abs(lo).max(), np.abs(hi).max()))                       # Abstand zum Ursprung: float32 rundet dort grober
+    slack = 8 * FLOAT32_EPS * far / diag
+    if abs(got_area - want_area) > (GEOMETRY_TOLERANCE + 4 * slack) * max(want_area, 1e-300) or max(float(np.abs(blo - lo).max()), float(np.abs(bhi - hi).max())) > (GEOMETRY_TOLERANCE + slack) * diag:
         fail("Selbstpruefung fehlgeschlagen: Flaeche oder Ausdehnung der geschriebenen Datei weichen von der Szene ab (%s)." % dst)
 
 
@@ -1125,19 +1169,34 @@ def _verify_written(sc_new, src_scene, kept_ids, dst, fmt):
     fresh_back, fresh = back.faces[len(kept_ids):], sc_new.faces[len(kept_ids):]
     if not np.isfinite(back.V).all() or [f.mat for f in fresh_back] != [f.mat for f in fresh] or sum(len(f.c) - 2 for f in fresh_back) != n_new:
         fail("Selbstpruefung fehlgeschlagen: die neuen Flaechen sind in der Datei nicht wie vorgesehen (Material, Zahlen) (%s)." % dst)
+    if not all(_text_finite(back.vt[c[1]]) for f in fresh_back for c in f.c if c[1] >= 0) or not all(
+            _text_finite(back.vn[c[2]]) for f in fresh_back for c in f.c if c[2] >= 0):
+        fail("Selbstpruefung fehlgeschlagen: die neuen Flaechen haben unendliche oder ungueltige UV-/Normalenwerte (%s)." % dst)
     _check_orientation(src_scene, back, dst)
     return n_kept, n_new
 
 
-def _write_and_check(sc_new, src_scene, kept_ids, dst):
-    """Schreibt und prueft das Ergebnis durch Zuruecklesen (siehe _verify_written); bei einem Fehler wird die Ausgabe wieder entfernt."""
-    fmt = mc.detect_format(dst)
-    mc.save_atomic(scene_bytes(sc_new, fmt), dst)
+def _text_finite(s):
     try:
-        return _verify_written(sc_new, src_scene, kept_ids, dst, fmt)
+        return all(math.isfinite(float(t)) for t in s.split())
+    except ValueError:
+        return False
+
+
+def _write_and_check(sc_new, src_scene, kept_ids, dst):
+    """Schreibt das Ergebnis neben das Ziel, prueft es durch Zuruecklesen (siehe _verify_written) und setzt es erst danach an die Stelle des Ziels:
+    ein Fehlschlag laesst ein frueheres gutes Ergebnis unberuehrt (und hinterlaesst nichts)."""
+    dst = Path(dst)
+    fmt = mc.detect_format(dst)
+    stage = dst.with_name(".meshcut-pruefung-" + dst.name)
+    mc.save_atomic(scene_bytes(sc_new, fmt), stage)
+    try:
+        report = _verify_written(sc_new, src_scene, kept_ids, stage, fmt)
+        os.replace(stage, dst)
+        return report
     except BaseException:
         try:
-            Path(dst).unlink()
+            stage.unlink()
         except OSError:
             pass
         raise
@@ -1153,7 +1212,7 @@ def edit_scene(sc, region, mode, shape="auto", axis="auto", scale=1.0, material=
         fail("Danach bliebe nichts uebrig - das waere das ganze Netz.")
     out = sc.copy()
     open_before = _boundary_edges(sc, pid)
-    new_faces, holes, prim_note = [], 0, ""
+    new_faces, holes, uneven, prim_note, hints = [], 0, 0, "", []
     lo = np.array(region["bbox"]["min"])
     hi = np.array(region["bbox"]["max"])
     prim = None
@@ -1177,7 +1236,7 @@ def edit_scene(sc, region, mode, shape="auto", axis="auto", scale=1.0, material=
             uvbox = (0.0, 0.0, 1.0, 1.0)
         prim = (kind, ax, plo, phi_, mat, uvbox)
     if close:                                                    # auch beim Ersetzen: erst das Loch zu, dann sitzt der Ersatz darauf
-        extra, holes = close_holes(out, pid, removed)
+        extra, holes, uneven = close_holes(out, pid, removed)
         new_faces += extra
     if prim is not None:
         kind, ax, plo, phi_, mat, uvbox = prim
@@ -1185,11 +1244,15 @@ def edit_scene(sc, region, mode, shape="auto", axis="auto", scale=1.0, material=
         first = sc.faces[removed[0]]
         new_faces += make_primitive(out, kind, ax, plo, phi_, mat, uvbox, out.has_normals(), out.has_uv(), smooth, obj=first.obj, grp=first.grp)
         prim_note = "%s (%s)" % ({"box": "Quader", "sphere": "Kugel", "cylinder": "Zylinder"}[kind], "xyz"[ax] if kind == "cylinder" else "ohne Achse")
+    if uneven:
+        hints.append("%d Loch/Loecher mit nicht ebenem Rand wurden flach gefuellt (Ohrenschnitt aus Randpunkten): die Fuellung folgt der Woelbung der Umgebung nicht." % uneven)
+    if ranking and ranking[0][0] > BAD_SHAPE:
+        hints.append("Kein Kandidat passt gut (beste Abweichung %.2f der Diagonale): der Ersatz ist nur eine grobe Naeherung." % ranking[0][0])
     out.faces = [sc.faces[i] for i in kept] + new_faces
     open_after = _boundary_edges(out, position_ids(out))
     report = {"entfernt": len(removed), "entfernte_dreiecke": int(sc.n_triangles(removed)), "neu": len(new_faces),
               "neue_dreiecke": int(sum(len(f.c) - 2 for f in new_faces)), "loecher_geschlossen": holes,
-              "ersatz": prim_note, "kandidaten": [(round(v, 4), k, a) for v, k, a in ranking], "offene_kanten_vorher": open_before, "offene_kanten_nachher": open_after}
+              "ersatz": prim_note, "kandidaten": [(round(v, 4), k, a) for v, k, a in ranking], "offene_kanten_vorher": open_before, "offene_kanten_nachher": open_after, "hinweise": hints}
     return out, kept, report
 
 
@@ -1233,6 +1296,8 @@ def _run_edit(a, mode):
     else:
         mc.say("Pruefung: von %d Dreiecken %d entfernt, %d neu dazugekommen; %s wird hier nur mit Geometrie geschrieben - Farben, Materialien und UV der Eingabe gehen verloren." % (
             total, rep["entfernte_dreiecke"], rep["neue_dreiecke"], mc.detect_format(dst).upper()))
+    for h in rep["hinweise"]:
+        mc.say("Hinweis: " + h)
     if rep["offene_kanten_vorher"] != rep["offene_kanten_nachher"]:
         mc.say("Hinweis: offene Kanten vorher %d, nachher %d." % (rep["offene_kanten_vorher"], rep["offene_kanten_nachher"]))
     if sc.dropped:

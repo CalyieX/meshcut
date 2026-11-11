@@ -1224,7 +1224,7 @@ def read_obj(data):
     work = _PolygonWork()
     V = []
     objs = [("", [])]
-    for ln in data.decode("utf-8", errors="replace").splitlines():
+    for ln in data.decode("utf-8-sig", errors="replace").splitlines():       # utf-8-sig: eine BOM am Dateianfang macht das erste Tag nicht kaputt
         q = ln.split()
         if not q:
             continue

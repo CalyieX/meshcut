@@ -894,10 +894,10 @@ def test_self_check_catches_a_reversed_fill(tmp_path, monkeypatch):
     real = ed.close_holes
 
     def reversed_fill(sc, pid, removed):
-        faces, n = real(sc, pid, removed)
+        faces, n, u = real(sc, pid, removed)
         for f in faces:
             f.c = f.c[::-1]
-        return faces, n
+        return faces, n, u
     monkeypatch.setattr(ed, "close_holes", reversed_fill)
     out = tmp_path / "o.obj"
     with pytest.raises(mc.MeshcutError, match="falsch herum"):
@@ -1149,3 +1149,161 @@ def test_ear_clip_refuses_a_loop_that_runs_against_the_normal():
     t = ed._projected_ear_clip(Pr, cen, n)
     assert t is not None and len(t) == 2
     assert ed._projected_ear_clip(Pr[::-1], cen, n) is None
+
+
+# ----------------------------------------------------------------------------- Spock R8
+def _grid_obj(n=8, hole=((2, 2), (3, 2)), lift=None, uv=False, mtl="m.mtl"):
+    V = [(i / n, j / n, (lift or {}).get((i, j), 0.0)) for j in range(n + 1) for i in range(n + 1)]
+    L = ["mtllib " + mtl] + ["v %r %r %r" % v for v in V]
+    if uv:
+        L += ["vt %r %r" % (v[0], v[1]) for v in V]
+    cur = None
+    for j in range(n):
+        for i in range(n):
+            m = "hole" if (i, j) in hole else "base"
+            if m != cur:
+                L.append("usemtl " + m)
+                cur = m
+            a, b, c, d = j * (n + 1) + i + 1, j * (n + 1) + i + 2, (j + 1) * (n + 1) + i + 2, (j + 1) * (n + 1) + i + 1
+            quad = (a, b, c, d)
+            L.append("f " + " ".join(("%d/%d" % (q, q)) if uv else str(q) for q in quad))
+    return "\n".join(L) + "\n"
+
+
+def test_latin1_names_survive_unchanged(tmp_path):
+    p = scene_obj(tmp_path)
+    p.write_bytes(p.read_bytes().replace(b"usemtl red", b"usemtl r\xe4d"))
+    out = tmp_path / "o.obj"
+    mc.remove(p, region=2, out=out)
+    data = out.read_bytes()
+    assert b"usemtl r\xe4d" in data and b"\xef\xbf\xbd" not in data
+
+
+def test_utf8_bom_does_not_break_the_first_vertex(tmp_path):
+    p = scene_obj(tmp_path)
+    p.write_bytes(b"\xef\xbb\xbf" + p.read_bytes())
+    sc = ed.read_scene(p)
+    assert len(sc.V) == 16 and sc.mtllib == ["m.mtl"]
+    out = tmp_path / "o.obj"
+    mc.remove(p, region=2, out=out)
+    assert len(mc.load_mesh(out).F) > 0
+
+
+def test_failed_check_leaves_an_earlier_good_result_untouched(tmp_path, monkeypatch):
+    src = tmp_path / "a.stl"
+    src.write_bytes(ed.scene_bytes(ed.read_scene(scene_obj(tmp_path)), "stl"))
+    out = tmp_path / "o.stl"
+    mc.remove(src, region=2, out=out)
+    good = out.read_bytes()
+    real = ed.scene_bytes
+
+    def shift(sc, fmt):
+        t = sc.copy()
+        t.V = t.V + 100.0
+        return real(t, fmt)
+    monkeypatch.setattr(ed, "scene_bytes", shift)
+    with pytest.raises(mc.MeshcutError):
+        mc.remove(src, region=2, out=out)
+    assert out.read_bytes() == good
+    assert not [f for f in tmp_path.iterdir() if f.name.startswith(".meshcut")]
+
+
+def test_hole_on_a_uv_seam_gets_continuous_uv_values():
+    sc = ed.Scene()
+    sc.V = np.zeros((6, 3))
+    sc.vt = ["0.95 0.5", "0.97 0.5", "0.99 0.5", "0.01 0.5", "0.03 0.5", "0.05 0.5"]
+    rloop = [(k, k, k, -1, 0) for k in range(6)]
+    out = ed._unwrap_uv_seam(sc, rloop)
+    u = [float(sc.vt[x[2]].split()[0]) for x in out]
+    assert max(u) - min(u) < 0.2 and np.all(np.diff(u) > 0)
+    assert sc.vt[:6] == ["0.95 0.5", "0.97 0.5", "0.99 0.5", "0.01 0.5", "0.03 0.5", "0.05 0.5"]       # vorhandene Eintraege bleiben
+    ring = [(k, k, k, -1, 0) for k in range(6)]
+    sc.vt = ["%.2f 0.5" % x for x in (0.0, 0.4, 0.8, 0.2, 0.6, 0.9)]                             # Rand umschliesst die Textur (Pol): nicht entwirrbar
+    assert ed._unwrap_uv_seam(sc, ring) == ring
+
+
+def test_stl_far_from_the_origin_passes_the_self_check(tmp_path):
+    p = tmp_path / "far.obj"
+    lines = []
+    for ln in _grid_obj().splitlines():
+        if ln.startswith("v "):
+            x, y, z = map(float, ln.split()[1:])
+            ln = "v %r %r %r" % (x + 100000.1234567, y + 100000.1234567, z)
+        lines.append(ln)
+    p.write_text("\n".join(lines) + "\n")
+    out = tmp_path / "o.stl"
+    mc.remove(p, name="hole", out=out)
+    assert out.exists() and len(mc.load_mesh(out).F) > 0
+
+
+def test_mtllib_with_two_names_copies_both(tmp_path):
+    work = tmp_path / "in"
+    work.mkdir()
+    p = work / "g.obj"
+    p.write_text(_grid_obj(mtl="a.mtl b.mtl"))
+    (work / "a.mtl").write_text("newmtl base\nKd 1 0 0\n")
+    (work / "b.mtl").write_text("newmtl hole\nKd 0 1 0\n")
+    dst = tmp_path / "out"
+    dst.mkdir()
+    mc.remove(p, name="hole", out=dst / "o.obj")
+    assert (dst / "a.mtl").exists() and (dst / "b.mtl").exists()
+
+
+def test_nan_uv_in_the_rim_is_caught_by_the_self_check(tmp_path):
+    t = _grid_obj(uv=True).splitlines()
+    k = next(i for i, ln in enumerate(t) if ln.startswith("vt "))
+    n = 8
+    idx = 2 * (n + 1) + 2                                          # ein Eckpunkt am Lochrand
+    t[k + idx] = "vt nan nan"
+    p = tmp_path / "nan.obj"
+    p.write_text("\n".join(t) + "\n")
+    out = tmp_path / "o.obj"
+    with pytest.raises(mc.MeshcutError, match="ungueltige"):
+        mc.remove(p, name="hole", out=out)
+    assert not out.exists()
+
+
+def test_swap_auto_says_when_no_candidate_fits(tmp_path, monkeypatch):
+    sc, regs = regions_of(scene_obj(tmp_path))
+    monkeypatch.setattr(ed, "rank_shapes", lambda *a, **k: [(0.4, "box", 0), (0.5, "sphere", 0)])
+    _, _, rep = ed.edit_scene(sc, regs[1], "swap")
+    assert any("Kein Kandidat" in h for h in rep["hinweise"])
+    monkeypatch.setattr(ed, "rank_shapes", lambda *a, **k: [(0.01, "box", 0)])
+    _, _, rep = ed.edit_scene(sc, regs[1], "swap")
+    assert rep["hinweise"] == []
+
+
+def test_uneven_rim_hole_is_filled_flat_but_says_so(tmp_path):
+    lift = {(2, 2): 0.15, (3, 2): 0.0, (4, 2): 0.1, (4, 3): 0.0, (3, 3): 0.12, (2, 3): 0.0}
+    p = tmp_path / "u.obj"
+    p.write_text(_grid_obj(lift=lift))
+    sc = ed.read_scene(p)
+    regs = ed.find_regions(sc)
+    _, _, rep = ed.edit_scene(sc, ed.choose_region(sc, regs, name="hole"), "remove")
+    assert rep["loecher_geschlossen"] == 1 and any("nicht ebenem Rand" in h for h in rep["hinweise"])
+
+
+def test_centre_fan_normals_point_along_the_winding(tmp_path, monkeypatch):
+    real = ed._quality
+    calls = []
+
+    def fake(P):
+        calls.append(1)
+        return 0.001 if len(calls) <= 2 else real(P)
+    monkeypatch.setattr(ed, "_quality", fake)
+    out = tmp_path / "o.obj"
+    mc.remove(scene_obj(tmp_path), region=4, out=out)
+    monkeypatch.undo()
+    new = ed.read_scene(out)
+    for f in new.faces[-4:]:
+        P = new.V[[c[0] for c in f.c]]
+        g = np.cross(P[1] - P[0], P[2] - P[0])
+        vn = np.array([float(x) for x in new.vn[f.c[0][2]].split()])
+        assert float(g @ vn) > 0
+
+
+def test_swap_takes_the_dominant_material(tmp_path):
+    sc, regs = regions_of(scene_obj(tmp_path))
+    out, kept, rep = ed.edit_scene(sc, regs[0], "swap")
+    new_mats = {f.mat for f in out.faces[len(kept):]}
+    assert new_mats == {"blue"}
