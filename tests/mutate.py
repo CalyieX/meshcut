@@ -269,8 +269,8 @@ MUTANTS = [
     ('r9 edit: Flaechenvergleich weg', 'if abs(got_area - want_area) > (GEOMETRY_TOLERANCE + 4 * slack) * max(want_area, 1e-300) or max(', 'if False or max(', "kkmeshcut_edit.py"),
     ('r9 edit: Rahmenvergleich weg', '(GEOMETRY_TOLERANCE + slack) * diag:\n        fail("Selbstpruefung fehlgeschlagen: Flaeche oder', '(GEOMETRY_TOLERANCE + slack) * diag * 1e9:\n        fail("Selbstpruefung fehlgeschlagen: Flaeche oder', "kkmeshcut_edit.py"),
     ('r9 kern: verify ohne Hinweis', 'skipped = "" if has_cap else "ohne Deckel nicht geprueft: "', 'skipped = ""', "kkmeshcut.py"),
-    ('r10 edit: Latin-1 verschmilzt', 'return data.decode("utf-8-sig", errors="surrogateescape")', 'return data.decode("utf-8-sig", errors="replace")', "kkmeshcut_edit.py"),
-    ('r10 edit: BOM bleibt', 'return data.decode("utf-8-sig")\n', 'return data.decode("utf-8")\n', "kkmeshcut_edit.py"),
+    ('r10 edit: Latin-1 verschmilzt', 'errors="meshcut-escape"', 'errors="replace"', "kkmeshcut_edit.py"),
+    ('r10 edit: BOM bleibt', 'return data.decode("utf-8-sig"), False', 'return data.decode("utf-8"), False', "kkmeshcut_edit.py"),
     ('r10 edit: Ziel sofort ersetzt', 'os.replace(stage, dst)\n        return report', 'return report', "kkmeshcut_edit.py"),
     ('r10 edit: Naht nicht entwirrt', 'if shift == 0:  ', 'if False:  ', "kkmeshcut_edit.py"),
     ('r10 edit: Naht immer entwirrt', 'if shift == 0:  ', 'if True:  ', "kkmeshcut_edit.py"),
@@ -279,6 +279,17 @@ MUTANTS = [
     ('r10 edit: UV-Werte nicht geprueft', 'if not all(_text_finite(back.vt[c[1]]) for f in fresh_back for c in f.c if c[1] >= 0) or not all(', 'if False or not all(', "kkmeshcut_edit.py"),
     ('r10 edit: keine Kandidaten-Warnung', 'if ranking and ranking[0][0] > BAD_SHAPE:', 'if False:', "kkmeshcut_edit.py"),
     ('r10 edit: keine Flach-Warnung', 'uneven += 0 if flat else 1', 'uneven += 0', "kkmeshcut_edit.py"),
+    ('r11 edit: UV-Box min statt max', 'float(arr[:, 0].min()), float(arr[:, 1].min()), float(arr[:, 0].max())', 'float(arr[:, 0].max()), float(arr[:, 1].min()), float(arr[:, 0].max())', "kkmeshcut_edit.py"),
+    ('r11 edit: Rank ohne Rueckrichtung', '(float(d1.mean()) + float(d2.mean())) / 2 / diag', '(float(d1.mean()) + 0.0) / 2 / diag', "kkmeshcut_edit.py"),
+    ('r11 edit: Rank min statt max', '0.5 * max(float(d1.max()), float(d2.max())) / diag', '0.5 * min(float(d1.max()), float(d2.max())) / diag', "kkmeshcut_edit.py"),
+    ('r11 edit: mtl ueberschrieben', 'if _plain_file(s) and not d.exists():', 'if _plain_file(s):', "kkmeshcut_edit.py"),
+    ('r11 edit: Textur ueberschrieben', 'if _plain_file(ts) and not td.exists():', 'if _plain_file(ts):', "kkmeshcut_edit.py"),
+    ('r11 edit: Naht Schwelle 0,9', 'shift += -1 if d > 0.5 else (1 if d < -0.5 else 0)\n            w[k]', 'shift += -1 if d > 0.9 else (1 if d < -0.9 else 0)\n            w[k]', "kkmeshcut_edit.py"),
+    ('r11 edit: Spielraum mal 1000', 'slack = 8 * FLOAT32_EPS * far / diag', 'slack = 8000 * FLOAT32_EPS * far / diag', "kkmeshcut_edit.py"),
+    ('r11 edit: feste Staging-Datei', 'stage = dst.with_name(".meshcut-%s%s" % (uuid.uuid4().hex[:10], dst.suffix))', 'stage = dst.with_name(".meshcut-pruefung-" + dst.name)', "kkmeshcut_edit.py"),
+    ('r11 edit: vn nicht geprueft', '_text_finite(back.vn[c[2]]) for f in fresh_back for c in f.c if c[2] >= 0)', '_text_finite(back.vn[c[2]]) for f in fresh_back for c in f.c if False)', "kkmeshcut_edit.py"),
+    ('r11 edit: Leerzeichen-mtllib geteilt', 'names += [entry] if _plain_file(Path(src_path).resolve().parent / entry) else entry.split()', 'names += entry.split()', "kkmeshcut_edit.py"),
+    ('r11 edit: Texte nicht zurueckverwandelt', 'data = data.replace(chr(ESCAPE_BASE + b).encode("utf-8"), bytes([b]))', 'pass', "kkmeshcut_edit.py"),
 ]
 
 

@@ -6,12 +6,14 @@ Zylinder"), meshcut misst am Original, entscheidet selbst und prueft am Ende, da
 OBJ wird vollstaendig mitgefuehrt (Eckpunkte, UV, Normalen, Material, Objekt-/Gruppennamen, Glaettungsgruppen); andere Formate
 tragen nur Geometrie. Der exakte Schnitt (kkmeshcut.py) wird hier nicht angefasst.
 """
+import codecs
 import colorsys
 import json
 import math
 import os
 import shutil
 import struct
+import uuid
 import zlib
 from pathlib import Path
 
@@ -55,6 +57,7 @@ class Scene:
         self.mtllib = []
         self.fmt = "obj"
         self.dropped = 0                                         # Linien/Punkte, die nicht uebernommen werden
+        self.escaped = False                                     # Eingabe war kein UTF-8: einzelne Bytes stehen als U+F780..U+F7FF im Text
 
     # ---- Zugriff
     def has_uv(self):
@@ -111,7 +114,7 @@ class Scene:
         s = Scene()
         s.V, s.vt, s.vn, s.vtext = self.V.copy(), list(self.vt), list(self.vn), list(self.vtext)
         s.faces = list(self.faces)
-        s.mtllib, s.fmt, s.dropped = list(self.mtllib), self.fmt, self.dropped
+        s.mtllib, s.fmt, s.dropped, s.escaped = list(self.mtllib), self.fmt, self.dropped, self.escaped
         return s
 
     def signature(self, f):
@@ -120,13 +123,33 @@ class Scene:
                 f.mat, f.obj, f.grp, f.smooth)
 
 
+ESCAPE_BASE = 0xF700                                               # Bytes ab 0x80 ausserhalb von UTF-8 werden zu U+F780..U+F7FF (druckbar, JSON-sicher) und beim Schreiben zurueckverwandelt
+
+
+def _escape_bytes(exc):
+    if not isinstance(exc, UnicodeDecodeError):
+        raise exc
+    return "".join(chr(ESCAPE_BASE + b) for b in exc.object[exc.start:exc.end]), exc.end
+
+
+codecs.register_error("meshcut-escape", _escape_bytes)
+
+
 def _decode_text(data):
-    """OBJ-Text: UTF-8 (mit oder ohne BOM); Bytes, die kein UTF-8 sind (Latin-1-Namen aus alten Exportern), bleiben als Ersatzzeichen erhalten und gehen
-    unveraendert wieder hinaus, statt zu U+FFFD zu verschmelzen."""
+    """OBJ-Text: UTF-8 (mit oder ohne BOM). Bytes, die kein UTF-8 sind (Latin-1-Namen aus alten Exportern), bleiben erhalten und gehen unveraendert
+    wieder hinaus, statt zu U+FFFD zu verschmelzen. Rueckgabe: (Text, ob solche Bytes vorkamen)."""
     try:
-        return data.decode("utf-8-sig")
+        return data.decode("utf-8-sig"), False
     except UnicodeDecodeError:
-        return data.decode("utf-8-sig", errors="surrogateescape")
+        return data.decode("utf-8-sig", errors="meshcut-escape"), True
+
+
+def _encode_text(text, escaped):
+    data = text.encode("utf-8")
+    if escaped:
+        for b in range(0x80, 0x100):
+            data = data.replace(chr(ESCAPE_BASE + b).encode("utf-8"), bytes([b]))
+    return data
 
 
 def parse_obj(data):
@@ -135,7 +158,8 @@ def parse_obj(data):
     verts, v_text = [], []
     cur = {"mat": None, "obj": "", "grp": "", "smooth": ""}
     n_tri = 0
-    for ln in _decode_text(data).splitlines():
+    text, sc.escaped = _decode_text(data)
+    for ln in text.splitlines():
         q = ln.split()
         if not q:
             continue
@@ -243,7 +267,7 @@ def compact(sc):
             m[i] = len(m)
         maps.append(m)
     out = Scene()
-    out.fmt, out.mtllib, out.dropped = sc.fmt, list(sc.mtllib), sc.dropped
+    out.fmt, out.mtllib, out.dropped, out.escaped = sc.fmt, list(sc.mtllib), sc.dropped, sc.escaped
     keep = sorted(used[0])
     out.V = sc.V[keep] if keep else np.zeros((0, 3))
     out.vtext = [sc.vtext[i] for i in keep]
@@ -286,7 +310,7 @@ def obj_text(sc):
                 s += "//%d" % (n + 1)
             toks.append(s)
         lines.append("f " + " ".join(toks))
-    return ("\n".join(lines) + "\n").encode("utf-8", errors="surrogateescape")
+    return _encode_text("\n".join(lines) + "\n", sc.escaped)
 
 
 def scene_bytes(sc, fmt):
@@ -707,13 +731,32 @@ def _fan_is_consistent(Pr, cen, n):
     return True
 
 
+def _uv_of(text):
+    """(u, v) aus einem vt-Eintrag. Ein Eintrag mit nur u zaehlt als (u, 0); leer, nicht numerisch oder nicht endlich: None."""
+    try:
+        t = [float(x) for x in text.split()[:2]]
+    except ValueError:
+        return None
+    if not t or not all(math.isfinite(x) for x in t):
+        return None
+    return [t[0], t[1] if len(t) > 1 else 0.0]
+
+
+def _rim_uv(sc, rloop):
+    """UV der Randecken als Feld (n, 2) oder None, wenn eine Ecke keine brauchbare UV hat."""
+    if any(x[2] < 0 for x in rloop):
+        return None
+    uv = [_uv_of(sc.vt[x[2]]) for x in rloop]
+    return None if any(u is None for u in uv) else np.array(uv)
+
+
 def _unwrap_uv_seam(sc, rloop):
     """Liegt das Loch auf einer UV-Naht (am Rand springt u oder v von fast 1 auf fast 0), bekommen die Randecken der neuen Flaechen fortlaufende UV-Werte
     (z. B. 1,02 statt 0,02; die Textur wiederholt sich), sonst wuerde die Fuellung die ganze Textur in ein Dreieck spannen. Die vorhandenen Flaechen bleiben
     unberuehrt: es entstehen neue vt-Eintraege nur fuer die neuen Ecken. Umschliesst der Rand die ganze Textur (Pol), bleibt es bei den Werten."""
-    if any(x[2] < 0 for x in rloop):
+    arr = _rim_uv(sc, rloop)
+    if arr is None:
         return rloop
-    arr = np.array([[float(t) for t in sc.vt[x[2]].split()[:2]] for x in rloop])
     out = arr.copy()
     for c in (0, 1):
         col = arr[:, c]
@@ -779,10 +822,9 @@ def close_holes(sc, pid, removed):
                 new.append(Face([(rloop[k][1], rloop[k][2], vn) for k in (a_, b_, c_)], ref.mat, ref.obj, ref.grp, ""))
         else:
             ci = sc.add_vertex(cen)
-            uvs = [sc.vt[x[2]] for x in rloop if x[2] >= 0]
+            arr = _rim_uv(sc, rloop)
             cvt = -1
-            if len(uvs) == len(rloop):
-                arr = np.array([[float(t) for t in u.split()[:2]] for u in uvs])
+            if arr is not None:
                 cvt = sc.add_vt(arr.mean(axis=0))
             for k in range(len(rloop)):
                 a_, b_ = rloop[k], rloop[(k + 1) % len(rloop)]
@@ -797,10 +839,9 @@ def close_holes(sc, pid, removed):
 def _fill_with_rings(sc, rloop, Pr, cen, n, cv, ref, has_n):
     """Baut die gewölbte Füllung: Randring -> zwei Zwischenringe -> Mitte, Höhen aus dem gefitteten Paraboloid."""
     m = len(rloop)
-    uvs = [sc.vt[x[2]] for x in rloop if x[2] >= 0]
-    have_uv = len(uvs) == m
+    arr = _rim_uv(sc, rloop)
+    have_uv = arr is not None
     if have_uv:
-        arr = np.array([[float(t) for t in s.split()[:2]] for s in uvs])
         uvc = arr.mean(axis=0)
     diam = float(np.linalg.norm(Pr.max(axis=0) - Pr.min(axis=0)))
     uv_map = None
@@ -1050,7 +1091,19 @@ def _out_path(input, out):
         mc.detect_format(dst)
     except MeshcutError:
         fail("Die Ausgabedatei braucht eine Endung wie .obj, .stl, .ply, .3mf oder .glb.")
+    _check_target(dst)
     return dst
+
+
+def _check_target(dst):
+    """Vor der Berechnung: das Ziel darf kein Ordner oder Link und nicht schreibgeschuetzt sein, sein Ordner muss es geben (wie save_atomic)."""
+    dst = Path(dst)
+    if dst.exists() and (mc.link_like(dst) or not dst.is_file()):
+        fail("%s ist ein Ordner oder Link." % dst)
+    if dst.exists() and not os.access(dst, os.W_OK):
+        fail("%s ist schreibgeschuetzt." % dst)
+    if not dst.resolve().parent.is_dir():
+        fail("Der Ordner fuer %s existiert nicht." % dst)
 
 
 def _boundary_edges(sc, pid):
@@ -1171,7 +1224,7 @@ def _verify_written(sc_new, src_scene, kept_ids, dst, fmt):
         fail("Selbstpruefung fehlgeschlagen: die neuen Flaechen sind in der Datei nicht wie vorgesehen (Material, Zahlen) (%s)." % dst)
     if not all(_text_finite(back.vt[c[1]]) for f in fresh_back for c in f.c if c[1] >= 0) or not all(
             _text_finite(back.vn[c[2]]) for f in fresh_back for c in f.c if c[2] >= 0):
-        fail("Selbstpruefung fehlgeschlagen: die neuen Flaechen haben unendliche oder ungueltige UV-/Normalenwerte (%s)." % dst)
+        fail("Selbstpruefung fehlgeschlagen: die neuen Flaechen haben unendliche oder ungueltige UV-/Normalenwerte, meist weil die Eingabe sie am Lochrand schon hat (%s)." % dst)
     _check_orientation(src_scene, back, dst)
     return n_kept, n_new
 
@@ -1188,7 +1241,8 @@ def _write_and_check(sc_new, src_scene, kept_ids, dst):
     ein Fehlschlag laesst ein frueheres gutes Ergebnis unberuehrt (und hinterlaesst nichts)."""
     dst = Path(dst)
     fmt = mc.detect_format(dst)
-    stage = dst.with_name(".meshcut-pruefung-" + dst.name)
+    _check_target(dst)
+    stage = dst.with_name(".meshcut-%s%s" % (uuid.uuid4().hex[:10], dst.suffix))       # kurz und einmalig: keine fremde Datei, keine Kollision, keine Pfadlaenge
     mc.save_atomic(scene_bytes(sc_new, fmt), stage)
     try:
         report = _verify_written(sc_new, src_scene, kept_ids, stage, fmt)
@@ -1228,9 +1282,9 @@ def edit_scene(sc, region, mode, shape="auto", axis="auto", scale=1.0, material=
         half = _min_half(half)                                           # ein flaches Element (z. B. eine Platte) ergibt keinen Ersatz mit Dicke null
         plo, phi_ = centre - half, centre + half
         mat = material if material else (region["materials"][0] if region["materials"] else None)
-        uvs = [float(t) for i in removed for c in sc.faces[i].c if c[1] >= 0 for t in sc.vt[c[1]].split()[:2]]
+        uvs = [u for i in removed for c in sc.faces[i].c if c[1] >= 0 for u in [_uv_of(sc.vt[c[1]])] if u is not None]
         if uvs:
-            arr = np.array(uvs).reshape(-1, 2)
+            arr = np.array(uvs)
             uvbox = (float(arr[:, 0].min()), float(arr[:, 1].min()), float(arr[:, 0].max()), float(arr[:, 1].max()))
         else:
             uvbox = (0.0, 0.0, 1.0, 1.0)

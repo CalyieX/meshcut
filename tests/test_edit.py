@@ -1307,3 +1307,144 @@ def test_swap_takes_the_dominant_material(tmp_path):
     out, kept, rep = ed.edit_scene(sc, regs[0], "swap")
     new_mats = {f.mat for f in out.faces[len(kept):]}
     assert new_mats == {"blue"}
+
+
+# ----------------------------------------------------------------------------- Spock R9
+def test_latin1_names_are_json_safe_in_the_region_list(tmp_path):
+    p = scene_obj(tmp_path)
+    p.write_bytes(p.read_bytes().replace(b"usemtl red", b"usemtl r\xe9d"))
+    sc = ed.read_scene(p)
+    regs = ed.find_regions(sc)
+    text = json.dumps(regs, ensure_ascii=False).encode("utf-8")                 # so antwortet der HTTP-Dienst
+    assert b"r" in text and len(text) > 10
+    out = tmp_path / "o.obj"
+    mc.remove(p, region=2, out=out)
+    assert b"usemtl r\xe9d" in out.read_bytes()
+
+
+def test_one_component_and_broken_vt_do_not_crash_the_fill(tmp_path):
+    t = _grid_obj(uv=True).splitlines()
+    t = [("vt " + ln.split()[1]) if ln.startswith("vt ") else ln for ln in t]
+    p = tmp_path / "one.obj"
+    p.write_text("\n".join(t) + "\n")
+    out = tmp_path / "o.obj"
+    mc.remove(p, name="hole", out=out)
+    assert out.exists()
+    t2 = _grid_obj(uv=True).splitlines()
+    k = next(i for i, ln in enumerate(t2) if ln.startswith("vt "))
+    t2[k + 2 * 9 + 2] = "vt abc def"
+    q = tmp_path / "abc.obj"
+    q.write_text("\n".join(t2) + "\n")
+    with pytest.raises(mc.MeshcutError, match="ungueltige"):                  # saubere Meldung statt Traceback
+        mc.remove(q, name="hole", out=tmp_path / "o2.obj")
+    assert not (tmp_path / "o2.obj").exists()
+
+
+def test_output_that_is_a_folder_is_refused_with_its_own_name(tmp_path):
+    d = tmp_path / "ziel.obj"
+    d.mkdir()
+    with pytest.raises(mc.MeshcutError) as e:
+        mc.remove(scene_obj(tmp_path), region=2, out=d)
+    assert "ziel.obj" in str(e.value) and ".meshcut" not in str(e.value)
+
+
+def test_a_file_that_looks_like_staging_is_never_touched(tmp_path):
+    precious = tmp_path / ".meshcut-pruefung-st.obj"
+    precious.write_text("KEEP")
+    mc.remove(scene_obj(tmp_path), region=2, out=tmp_path / "st.obj")
+    assert precious.read_text() == "KEEP"
+
+
+def test_existing_mtl_and_texture_in_the_output_folder_are_not_overwritten(tmp_path):
+    work = tmp_path / "in"
+    work.mkdir()
+    p = scene_obj(work)
+    (work / "m.mtl").write_text("newmtl blue\nmap_Kd t.png\n")
+    (work / "t.png").write_bytes(b"NEU")
+    dst = tmp_path / "out"
+    dst.mkdir()
+    (dst / "m.mtl").write_text("ALT")
+    (dst / "t.png").write_bytes(b"ALT")
+    mc.remove(p, region=2, out=dst / "o.obj")
+    assert (dst / "m.mtl").read_text() == "ALT" and (dst / "t.png").read_bytes() == b"ALT"
+    dst2 = tmp_path / "out2"
+    dst2.mkdir()
+    (dst2 / "t.png").write_bytes(b"ALT")
+    mc.remove(p, region=2, out=dst2 / "o.obj")
+    assert (dst2 / "t.png").read_bytes() == b"ALT" and (dst2 / "m.mtl").exists()
+
+
+def test_mtllib_name_with_a_space_stays_whole_when_the_file_exists(tmp_path):
+    work = tmp_path / "in"
+    work.mkdir()
+    p = work / "g.obj"
+    p.write_text(_grid_obj(mtl="my mat.mtl"))
+    (work / "my mat.mtl").write_text("newmtl base\nKd 1 0 0\n")
+    dst = tmp_path / "out"
+    dst.mkdir()
+    mc.remove(p, name="hole", out=dst / "o.obj")
+    assert (dst / "my mat.mtl").exists()
+
+
+@pytest.mark.parametrize("axis", [0, 1])
+def test_seam_jump_of_seventy_percent_counts_as_a_seam_on_either_axis(axis):
+    sc = ed.Scene()
+    sc.V = np.zeros((6, 3))
+    vals = [0.9, 0.95, 0.2, 0.25, 0.3, 0.35]
+    sc.vt = [("%.2f 0.5" % v) if axis == 0 else ("0.5 %.2f" % v) for v in vals]
+    rloop = [(k, k, k, -1, 0) for k in range(6)]
+    out = ed._unwrap_uv_seam(sc, rloop)
+    got = [float(sc.vt[x[2]].split()[axis]) for x in out]
+    assert got == pytest.approx([0.9, 0.95, 1.2, 1.25, 1.3, 1.35])
+
+
+def test_float32_allowance_does_not_hide_a_gross_shift_far_from_the_origin(tmp_path, monkeypatch):
+    p = tmp_path / "far.obj"
+    lines = []
+    for ln in _grid_obj().splitlines():
+        if ln.startswith("v "):
+            x, y, z = map(float, ln.split()[1:])
+            ln = "v %r %r %r" % (x + 100000.0, y + 100000.0, z)
+        lines.append(ln)
+    p.write_text("\n".join(lines) + "\n")
+    real = ed.scene_bytes
+
+    def shifted(sc, fmt):
+        t = sc.copy()
+        t.V = t.V + np.array([0.5, 0.0, 0.0])
+        return real(t, fmt)
+    monkeypatch.setattr(ed, "scene_bytes", shifted)
+    with pytest.raises(mc.MeshcutError, match="Ausdehnung"):
+        mc.remove(p, name="hole", out=tmp_path / "o.stl")
+
+
+def test_nonfinite_normal_in_a_new_face_is_caught(tmp_path, monkeypatch):
+    def bad(self, n):
+        self.vn.append("nan nan nan")
+        return len(self.vn) - 1
+    monkeypatch.setattr(ed.Scene, "add_vn", bad)
+    out = tmp_path / "o.obj"
+    with pytest.raises(mc.MeshcutError, match="ungueltige"):
+        mc.remove(scene_obj(tmp_path), region=4, out=out)
+    assert not out.exists()
+
+
+def test_rank_score_counts_both_directions_and_the_worst_point():
+    """Ein L aus zwei Quaderseiten: jeder Eckpunkt liegt auf dem Quader (Original -> Kandidat 0), aber zwei Ecken des Quaders liegen weit vom L entfernt."""
+    V = [(x, y, z) for z in (0, 2) for y in (0, 2) for x in (0, 2)]
+    lines = ["v %d %d %d" % v for v in V] + ["f 1 3 7 5", "f 1 2 6 5"]
+    sc = ed.parse_obj(("\n".join(lines) + "\n").encode())
+    region = {"bbox": {"min": [0, 0, 0], "max": [2, 2, 2]}, "face_ids": [0, 1]}
+    ranking = ed.rank_shapes(sc, region)
+    score = {(k, a): v for v, k, a in ranking}[("box", 0)]
+    diag = 2 * math.sqrt(3)
+    assert score == pytest.approx(0.5 / 2 / diag + 0.5 * 2.0 / diag, rel=0.02)         # Mittel 0,5 (zwei von acht Ecken im Abstand 2) und schlechtester Punkt 2
+
+
+def test_swap_replacement_covers_the_uv_box_of_the_original(tmp_path):
+    sc, regs = regions_of(scene_obj(tmp_path))
+    removed = regs[1]["face_ids"]
+    orig = np.array([[float(x) for x in sc.vt[c[1]].split()[:2]] for i in removed for c in sc.faces[i].c if c[1] >= 0])
+    out, kept, _ = ed.edit_scene(sc, regs[1], "swap")
+    new = np.array([[float(x) for x in out.vt[c[1]].split()[:2]] for f in out.faces[len(kept):] for c in f.c if c[1] >= 0])
+    assert np.allclose(new.min(axis=0), orig.min(axis=0)) and np.allclose(new.max(axis=0), orig.max(axis=0))
