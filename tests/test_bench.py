@@ -8,11 +8,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bench"))
 import edit_bench as eb  # noqa: E402
 
 
-@pytest.mark.parametrize("typ,kind", [("loch", "plate"), ("loch", "sphere"), ("swap", "box"), ("swap", "sphere"), ("swap", "cylinder")])
-@pytest.mark.parametrize("scale", [1e-3, 1e3])
-def test_bench_case_is_inside_the_frozen_thresholds(tmp_path, typ, kind, scale):
-    m = (eb.case_hole if typ == "loch" else eb.case_swap)(kind, scale, tmp_path)
-    assert eb.judge(typ + "_" + kind, m) == [], m
+@pytest.mark.parametrize("typ,kind,form", [("loch", "plate", "rect"), ("loch", "plate", "c"), ("loch", "sphere", "rect"), ("loch", "sphere", "c"),
+                                           ("swap", "box", ""), ("swap", "sphere", ""), ("swap", "cylinder", "")])
+@pytest.mark.parametrize("scale", [1e-9, 1e-3, 1e3, 1e9])
+def test_bench_case_is_inside_the_frozen_thresholds(tmp_path, typ, kind, form, scale):
+    m = eb.case_hole(kind, scale, tmp_path, form) if typ == "loch" else eb.case_swap(kind, scale, tmp_path)
+    assert eb.judge(typ + "_" + kind, m, eb._thresholds(typ, kind, form)) == [], m
 
 
 def test_flat_hole_stays_flat_and_curved_hole_follows_the_surface(tmp_path):

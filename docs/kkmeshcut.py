@@ -2199,8 +2199,9 @@ def verify_folder(folder, source=None):
         add("flaeche", abs(area_sum - sa) <= rel_a * max(sa, 1e-300), "Flaeche der Teile %.9g, Original %.9g" % (area_sum, sa))
     else:
         has_cap = any(m["cap_faces"] for m in side["parts"])
-        add("wasserdicht", all_tight or not has_cap, "jedes Teil wasserdicht" if all_tight else "; ".join(notes))
-        add("euler", all_even or not has_cap, "Euler-Zahl je Teil gerade" if all_even else "; ".join(notes))
+        skipped = "" if has_cap else "ohne Deckel nicht geprueft: "
+        add("wasserdicht", all_tight or not has_cap, "jedes Teil wasserdicht" if all_tight else skipped + "; ".join(notes))
+        add("euler", all_even or not has_cap, "Euler-Zahl je Teil gerade" if all_even else skipped + "; ".join(notes))
         if has_cap:
             add("volumen", abs(vol_sum - sv) <= rel_v * max(abs(sv), diag * sa * 1e-3, 1e-300),
                 "Summe der Teile %.12g, Original %.12g" % (vol_sum, sv))

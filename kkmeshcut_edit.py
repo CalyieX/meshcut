@@ -28,6 +28,7 @@ SCALE_RANGE = (0.01, 100.0)                                      # --scale: daru
 SIZE_RANGE = (64, 4096)                                          # --size des Uebersichtsbildes in Pixeln                                    # mehr Dreiecke werden fuers Bild gleichmaessig ausgeduennt
 CURVED_MIN = 0.01                                                # Loch folgt der Wölbung, wenn die Mitte mehr als dieser Anteil des Durchmessers von der Randebene abweicht
 CURVED_FIT = 0.02                                                # ... und der Paraboloid die Umgebung mit höchstens diesem Fehler (Anteil des Durchmessers) trifft
+UV_FIT = 0.1                                                     # UV der gewoelbten Fuellung aus der Lage, wenn der Randfit hoechstens diesen Anteil der UV-Spanne danebenliegt
 CURVED_RINGS = (2 / 3, 1 / 3)                                    # Zwischenringe der gewölbten Füllung (Anteil des Abstands zur Mitte)
 HOLE_PLANAR = 0.02                                               # Loch gilt als eben, wenn kein Randpunkt weiter als dieser Anteil des Durchmessers von der Ebene liegt
 
@@ -65,10 +66,28 @@ class Scene:
         out, src = [], []
         for i in (range(len(self.faces)) if face_ids is None else face_ids):
             c = self.faces[i].c
-            for k in range(1, len(c) - 1):
-                out.append((c[0][0], c[k][0], c[k + 1][0]))
+            for a, b, d in self._polygon_triangles(c):
+                out.append((c[a][0], c[b][0], c[d][0]))
                 src.append(i)
         return np.array(out, dtype=np.int64).reshape(-1, 3), np.array(src, dtype=np.int64)
+
+    def _polygon_triangles(self, c):
+        """Zerlegung einer Flaeche in Dreiecke als Ecken-Positionen (a, b, c) innerhalb der Flaeche. Dreiecke und konvexe Vierecke als Faecher;
+        alles andere per Ohrenschnitt in der Flaechenebene (ein Faecher legt bei konkaven Polygonen Dreiecke ausserhalb der Flaeche)."""
+        n = len(c)
+        if n <= 3:
+            return [(0, 1, 2)] if n == 3 else []
+        P = self.V[[x[0] for x in c]]
+        if n == 4 and mc._convex_quad(P):
+            return [(0, 1, 2), (0, 2, 3)]
+        cen = P.mean(axis=0)
+        nv = np.cross(P - cen, np.roll(P, -1, axis=0) - cen).sum(axis=0)
+        nl = float(np.linalg.norm(nv))
+        if nl > 0:
+            t = _projected_ear_clip(P, cen, nv / nl)
+            if t is not None:
+                return [tuple(x) for x in t]
+        return [(0, k, k + 1) for k in range(1, n - 1)]
 
     def n_triangles(self, face_ids=None):
         return sum(len(self.faces[i].c) - 2 for i in (range(len(self.faces)) if face_ids is None else face_ids))
@@ -449,7 +468,7 @@ def render_overview(sc, regions, size=720):
     R = Rx @ Rz
     Q = sc.V @ R.T
     lo, hi = Q[:, :2].min(axis=0), Q[:, :2].max(axis=0)
-    scale = (size * 0.9) / max(float((hi - lo).max()), 1e-12)
+    scale = (size * 0.9) / (float((hi - lo).max()) or 1.0)
     off = (size - (hi - lo) * scale) / 2
     X = (Q[:, 0] - lo[0]) * scale + off[0]
     Y = size - ((Q[:, 1] - lo[1]) * scale + off[1])
@@ -623,27 +642,58 @@ def _curved_fill(sc, rloop, Pr, cen, n):
     rel = Pr - cen
     uv = np.stack([rel @ u, rel @ v], axis=1)
     ang = np.unwrap(np.arctan2(uv[:, 1], uv[:, 0]))
-    if len(Pr) < 6 or not (np.all(np.diff(ang) > 0) and float(ang[-1] - ang[0]) < 2 * math.pi):
-        return None                                               # nicht sternfoermig um die Mitte: die Zwischenringe wuerden sich ueberlappen
+    star = bool(len(Pr) >= 6 and np.all(np.diff(ang) > 0) and float(ang[-1] - ang[0]) < 2 * math.pi)     # sonst wuerden sich Zwischenringe ueberlappen
+    if len(Pr) < 3:
+        return None
     pts = [Pr]
     for x in rloop:                                               # erster Nachbarring: die uebrigen Ecken der anliegenden Restflaechen
         pts.append(sc.V[[c[0] for c in sc.faces[x[4]].c]])
     P = np.vstack(pts)
-    r = P - cen
+    r = (P - cen) / diam                                          # Laengen in Durchmessern: der Rangtest haengt so nicht vom Massstab ab
     A = np.stack([np.ones(len(P)), r @ u, r @ v, (r @ u) ** 2, (r @ u) * (r @ v), (r @ v) ** 2], axis=1)
     w = r @ n
     if np.linalg.matrix_rank(A) < 6:
         return None
     coef, *_ = np.linalg.lstsq(A, w, rcond=None)
-    if float(np.sqrt(np.mean((A @ coef - w) ** 2))) > CURVED_FIT * diam:
+    if float(np.sqrt(np.mean((A @ coef - w) ** 2))) > CURVED_FIT:
         return None
 
-    def h(a, b):
-        return coef[0] + coef[1] * a + coef[2] * b + coef[3] * a * a + coef[4] * a * b + coef[5] * b * b
+    def h(a, b):                                                  # Hoehe in Originaleinheiten an der Stelle (a, b) in der Randebene
+        a, b = a / diam, b / diam
+        return diam * (coef[0] + coef[1] * a + coef[2] * b + coef[3] * a * a + coef[4] * a * b + coef[5] * b * b)
     hb = np.array([h(a, b) for a, b in uv])
     if abs(float(h(0.0, 0.0)) - float(hb.mean())) < CURVED_MIN * diam:
         return None
-    return {"u": u, "v": v, "uv": uv, "h": h, "hb": hb}
+    return {"u": u, "v": v, "uv": uv, "h": h, "hb": hb, "star": star}
+
+
+def _projected_ear_clip(Pr, cen, n):
+    """Ohrenschnitt des Randes, projiziert auf die Randebene (Normale n). Rueckgabe: Dreiecke (Randindizes) oder None, wenn die Projektion
+    sich ueberschlaegt (Ohrenschnitt scheitert, oder ein Dreieck zeigt gegen n)."""
+    ref_axis = np.zeros(3)
+    ref_axis[int(np.argmin(np.abs(n)))] = 1.0
+    u = np.cross(n, ref_axis)
+    u /= np.linalg.norm(u)
+    v = np.cross(n, u)
+    P2 = {i: (float((p - cen) @ u), float((p - cen) @ v)) for i, p in enumerate(Pr)}
+    try:
+        t, emerg = mc.ear_clip(P2, list(range(len(Pr))))
+    except MeshcutError:
+        return None
+    if t is None or emerg or len(t) != len(Pr) - 2:
+        return None
+    for a, b, c in t:
+        if float(np.cross(Pr[b] - Pr[a], Pr[c] - Pr[a]) @ n) <= 0:
+            return None
+    return t
+
+
+def _fan_is_consistent(Pr, cen, n):
+    """Ein Faecher vom Mittelpunkt ist nur gut, wenn alle seine Dreiecke zur Randebene gleich herum zeigen (Rand sternfoermig um die Mitte)."""
+    for k in range(len(Pr)):
+        if float(np.cross(Pr[k] - cen, Pr[(k + 1) % len(Pr)] - cen) @ n) <= 0:
+            return False
+    return True
 
 
 def close_holes(sc, pid, removed):
@@ -663,39 +713,32 @@ def close_holes(sc, pid, removed):
             mats[sc.faces[fi].mat] = mats.get(sc.faces[fi].mat, 0) + 1
         ref = sc.faces[max(faces_adj, key=lambda fi: mats[sc.faces[fi].mat])]
         has_n = sc.has_normals()
-        tris, flat = None, False
-        curved = None
+        tris, flat, curved = None, False, None
         if nl > 0 and diam > 0:
             n = n / nl
             curved = _curved_fill(sc, rloop, Pr, cen, n)
             flat = float(np.abs((Pr - cen) @ n).max()) <= HOLE_PLANAR * diam
-            if flat:
-                ref_axis = np.zeros(3)
-                ref_axis[int(np.argmin(np.abs(n)))] = 1.0
-                u = np.cross(n, ref_axis)
-                u /= np.linalg.norm(u)
-                v = np.cross(n, u)
-                P2 = {i: (float((p - cen) @ u), float((p - cen) @ v)) for i, p in enumerate(Pr)}
-                try:
-                    t, emerg = mc.ear_clip(P2, list(range(len(Pr))))
-                except MeshcutError:
-                    t, emerg = None, 1
-                if t is not None and not emerg and len(t) == len(Pr) - 2:
-                    tris = t
-                    qe = min(_quality(Pr[list(x)]) for x in t)                 # Pruefer: Ohrenschnitt gegen Faecher vom Mittelpunkt
-                    qf = min(_quality(np.array([Pr[k], Pr[(k + 1) % len(Pr)], cen])) for k in range(len(Pr)))
-                    if qe < SLIVER and qf > 3 * qe:
-                        tris = None
-        vn_flat = sc.add_vn(n) if (tris is not None and has_n) else -1
-        if curved is not None:
+            tris = _projected_ear_clip(Pr, cen, n)                  # in der Randebene triangulieren, auch bei gewoelbtem oder konkavem Rand
+            fan_ok = _fan_is_consistent(Pr, cen, n)
+            if tris is not None and fan_ok:                         # Pruefer: Ohrenschnitt gegen Faecher vom Mittelpunkt
+                qe = min(_quality(Pr[list(x)]) for x in tris)
+                qf = min(_quality(np.array([Pr[k], Pr[(k + 1) % len(Pr)], cen])) for k in range(len(Pr)))
+                if qe < SLIVER and qf > 3 * qe:
+                    tris = None
+            if tris is None and not fan_ok and not (curved is not None and curved["star"]):
+                fail("Das Loch ist zu verwickelt, um es sauber zu schliessen (Rand mit %d Punkten, weder eben noch sternfoermig). "
+                     "Ein kleineres Element waehlen oder das Netz vorher reparieren." % len(Pr))
+        if curved is not None and curved["star"]:
             new += _fill_with_rings(sc, rloop, Pr, cen, n, curved, ref, has_n)
         elif tris is not None:
-            for a, b, c in tris:
-                corners = []
-                for k in (a, b, c):
-                    x = rloop[k]
-                    corners.append((x[1], x[2], vn_flat))
-                new.append(Face(corners, ref.mat, ref.obj, ref.grp, ""))
+            vn_flat = sc.add_vn(n) if (flat and has_n) else -1
+            for a_, b_, c_ in tris:
+                vn = vn_flat
+                if has_n and not flat:                              # gewoelbter Rand: jedes Dreieck bekommt seine eigene Normale
+                    tn = np.cross(Pr[b_] - Pr[a_], Pr[c_] - Pr[a_])
+                    tl = float(np.linalg.norm(tn))
+                    vn = sc.add_vn(tn / tl) if tl > 0 else -1
+                new.append(Face([(rloop[k][1], rloop[k][2], vn) for k in (a_, b_, c_)], ref.mat, ref.obj, ref.grp, ""))
         else:
             ci = sc.add_vertex(cen)
             uvs = [sc.vt[x[2]] for x in rloop if x[2] >= 0]
@@ -704,11 +747,11 @@ def close_holes(sc, pid, removed):
                 arr = np.array([[float(t) for t in u.split()[:2]] for u in uvs])
                 cvt = sc.add_vt(arr.mean(axis=0))
             for k in range(len(rloop)):
-                a, b = rloop[k], rloop[(k + 1) % len(rloop)]
-                tn = np.cross(sc.V[b[1]] - sc.V[a[1]], sc.V[ci] - sc.V[a[1]])
+                a_, b_ = rloop[k], rloop[(k + 1) % len(rloop)]
+                tn = np.cross(sc.V[b_[1]] - sc.V[a_[1]], sc.V[ci] - sc.V[a_[1]])
                 tl = float(np.linalg.norm(tn))
                 vn = sc.add_vn(tn / tl) if (has_n and tl > 0) else -1
-                new.append(Face([(a[1], a[2], vn), (b[1], b[2], vn), (ci, cvt, vn)], ref.mat, ref.obj, ref.grp, ""))
+                new.append(Face([(a_[1], a_[2], vn), (b_[1], b_[2], vn), (ci, cvt, vn)], ref.mat, ref.obj, ref.grp, ""))
         closed += 1
     return new, closed
 
@@ -721,15 +764,25 @@ def _fill_with_rings(sc, rloop, Pr, cen, n, cv, ref, has_n):
     if have_uv:
         arr = np.array([[float(t) for t in s.split()[:2]] for s in uvs])
         uvc = arr.mean(axis=0)
+    diam = float(np.linalg.norm(Pr.max(axis=0) - Pr.min(axis=0)))
+    uv_map = None
+    if have_uv:                                                   # UV aus der Lage: affine Abbildung Lage -> UV, am Rand gefittet; ohne glatten Rand bleibt es bei linear
+        B = np.hstack([(Pr - cen) / diam, np.ones((m, 1))])
+        coef_uv, *_ = np.linalg.lstsq(B, arr, rcond=None)
+        span = float(np.ptp(arr, axis=0).max()) or 1.0
+        if np.linalg.matrix_rank(B) == 4 and float(np.abs(B @ coef_uv - arr).max()) <= UV_FIT * span:
+            uv_map = lambda p: np.append((p - cen) / diam, 1.0) @ coef_uv
     rings = [[(x[1], x[2]) for x in rloop]]
     for f in CURVED_RINGS:
         ring = []
         for k in range(m):
             a, b = f * cv["uv"][k, 0], f * cv["uv"][k, 1]
             pos = cen + a * cv["u"] + b * cv["v"] + float(cv["h"](a, b)) * n
-            ring.append((sc.add_vertex(pos), sc.add_vt(uvc + f * (arr[k] - uvc)) if have_uv else -1))
+            uvk = (uv_map(pos) if uv_map else uvc + f * (arr[k] - uvc)) if have_uv else None
+            ring.append((sc.add_vertex(pos), sc.add_vt(uvk) if have_uv else -1))
         rings.append(ring)
-    centre = (sc.add_vertex(cen + float(cv["h"](0.0, 0.0)) * n), sc.add_vt(uvc) if have_uv else -1)
+    cpos = cen + float(cv["h"](0.0, 0.0)) * n
+    centre = (sc.add_vertex(cpos), sc.add_vt(uv_map(cpos) if uv_map else uvc) if have_uv else -1)
     out = []
 
     def tri(a, b, c):
@@ -770,9 +823,22 @@ def _shape_areas(ext):
     return out
 
 
+def _extent(d):
+    """Ausdehnung je Achse, nach unten relativ zur groessten begrenzt (kein fester Wert in Einheiten: das Netz kann in Nanometern oder Kilometern sein)."""
+    d = np.asarray(d, dtype=np.float64)
+    m = float(d.max())
+    return np.maximum(d, 1e-9 * m if m > 0 else 1.0)
+
+
+def _min_half(half):
+    """Halbe Ausdehnung des Ersatzes: ein flaches Element ergibt keinen Ersatz mit Dicke null (mindestens 2,5 % der groessten Achse)."""
+    m = float(half.max())
+    return np.maximum(half, 0.025 * m if m > 0 else 1.0)
+
+
 def choose_shape(region, shape="auto", axis="auto"):
     lo, hi = np.array(region["bbox"]["min"]), np.array(region["bbox"]["max"])
-    ext = np.maximum(hi - lo, 1e-9)
+    ext = _extent(hi - lo)
     areas = _shape_areas(ext)
     if shape in (None, "auto"):
         shape = min(areas, key=lambda k: abs(math.log(areas[k] / max(region["area"], 1e-300))))
@@ -807,7 +873,7 @@ def rank_shapes(sc, region, scale=1.0, axis="auto"):
     lo, hi = np.array(region["bbox"]["min"]), np.array(region["bbox"]["max"])
     centre = (lo + hi) / 2
     half = (hi - lo) / 2 * float(scale)
-    half = np.maximum(half, 0.025 * float(half.max()) + 1e-12)
+    half = _min_half(half)
     diag = float(np.linalg.norm(2 * half)) or 1.0
     T, _ = sc.triangles(region["face_ids"])
     if len(T) > SCORE_TRIANGLES:
@@ -832,7 +898,7 @@ def rank_shapes(sc, region, scale=1.0, axis="auto"):
 
 def make_primitive(sc, shape, axis, lo, hi, material, uv_box, with_normals, with_uv, smooth_name, segments=32, obj="", grp=""):
     """Fuegt einen Grundkoerper in die Szene ein (Eckpunkte, UV, Normalen) und gibt seine Flaechen zurueck."""
-    c, ext = (lo + hi) / 2, np.maximum(hi - lo, 1e-9)
+    c, ext = (lo + hi) / 2, _extent(hi - lo)
     faces = []
     u0, v0, u1, v1 = uv_box
 
@@ -959,13 +1025,84 @@ def _copy_mtl(src_scene, src_path, dst_path):
         if Path(m).name != m or m in ("", ".", ".."):                # nur ein Dateiname neben der OBJ: nichts aus der Datei darf Pfade bestimmen
             continue
         s, d = Path(src_path).resolve().parent / m, Path(dst_path).resolve().parent / m
-        if s.is_file() and not d.exists():
+        if _plain_file(s) and not d.exists():
             try:
                 shutil.copyfile(s, d)
                 note.append(m)
+                for t in _mtl_textures(s):
+                    ts, td = s.parent / t, d.parent / t
+                    if _plain_file(ts) and not td.exists():
+                        shutil.copyfile(ts, td)
+                        note.append(t)
             except OSError:
                 pass
     return note
+
+
+MTL_MAP_KEYS = ("bump", "disp", "decal", "refl")
+
+
+def _plain_file(p):
+    """Eine gewoehnliche Datei, kein Link (auch nicht auf dem Weg dorthin): so fuehrt kein Link aus dem Eingabeordner hinaus."""
+    try:
+        return p.is_file() and not mc.link_like(p) and p.resolve().parent == p.parent.resolve()
+    except OSError:
+        return False
+
+
+def _mtl_textures(path, limit=1_000_000):
+    """Dateinamen der Texturen einer .mtl (map_Kd, bump ...): nur schlichte Namen neben der Datei, nichts mit Pfad."""
+    try:
+        text = Path(path).read_bytes()[:limit].decode("utf-8", "replace")
+    except OSError:
+        return []
+    out = []
+    for ln in text.splitlines():
+        tok = ln.split()
+        if len(tok) >= 2 and (tok[0].lower().startswith("map_") or tok[0].lower() in MTL_MAP_KEYS):
+            name = tok[-1]
+            if Path(name).name == name and name not in ("", ".", "..") and "/" not in name and "\\" not in name and name not in out:
+                out.append(name)
+    return out
+
+
+def directed_duplicates(sc):
+    """Wie oft dieselbe gerichtete Kante (von Position a nach Position b) mehrfach vorkommt: Flaechen, die sich gegenlaeufig ueberlappen
+    oder falsch herum liegen, erzeugen solche Doppel. Ein sauberes, ueberall gleich orientiertes Netz hat keine."""
+    pid = position_ids(sc)
+    seen, dup = set(), 0
+    for f in sc.faces:
+        c = f.c
+        for k in range(len(c)):
+            a, b = int(pid[c[k][0]]), int(pid[c[(k + 1) % len(c)][0]])
+            if a == b:
+                continue
+            if (a, b) in seen:
+                dup += 1
+            seen.add((a, b))
+    return dup
+
+
+GEOMETRY_TOLERANCE = 1e-4                                          # relativ; STL und GLB speichern float32
+
+
+def _check_geometry(sc_new, back, dst):
+    """Nicht-OBJ-Formate: Flaeche (aus den Polygonen der Szene, unabhaengig von der Dreieckszerlegung) und Rahmen der geschriebenen Datei muessen
+    zur Szene passen. Faengt verschobene, skalierte oder falsch zerlegte Ausgaben, auch wo kein Text zu vergleichen ist."""
+    want_area = float(np.linalg.norm(_fan_normals(sc_new, range(len(sc_new.faces))), axis=1).sum() / 2)
+    T, _ = back.triangles()
+    got_area = float(np.linalg.norm(np.cross(back.V[T[:, 1]] - back.V[T[:, 0]], back.V[T[:, 2]] - back.V[T[:, 0]]), axis=1).sum() / 2)
+    used = np.unique([c[0] for f in sc_new.faces for c in f.c])
+    lo, hi = sc_new.V[used].min(axis=0), sc_new.V[used].max(axis=0)
+    blo, bhi = back.V.min(axis=0), back.V.max(axis=0)
+    diag = float(np.linalg.norm(hi - lo)) or 1.0
+    if abs(got_area - want_area) > GEOMETRY_TOLERANCE * max(want_area, 1e-300) or max(float(np.abs(blo - lo).max()), float(np.abs(bhi - hi).max())) > GEOMETRY_TOLERANCE * diag:
+        fail("Selbstpruefung fehlgeschlagen: Flaeche oder Ausdehnung der geschriebenen Datei weichen von der Szene ab (%s)." % dst)
+
+
+def _check_orientation(src_scene, back, dst):
+    if directed_duplicates(back) > directed_duplicates(src_scene):
+        fail("Selbstpruefung fehlgeschlagen: die Fuellung liegt teilweise falsch herum oder ueberlappt sich (%s). Ein kleineres Element waehlen." % dst)
 
 
 def _verify_written(sc_new, src_scene, kept_ids, dst, fmt):
@@ -977,6 +1114,8 @@ def _verify_written(sc_new, src_scene, kept_ids, dst, fmt):
         back = read_scene(dst)
         if not np.isfinite(back.V).all() or back.n_triangles() != n_kept + n_new:
             fail("Selbstpruefung fehlgeschlagen: die geschriebene Datei hat nicht die erwarteten Dreiecke (%s)." % dst)
+        _check_geometry(sc_new, back, dst)
+        _check_orientation(src_scene, back, dst)
         return None
     back = parse_obj(Path(dst).read_bytes())
     want = [src_scene.signature(src_scene.faces[i]) for i in kept_ids]
@@ -986,6 +1125,7 @@ def _verify_written(sc_new, src_scene, kept_ids, dst, fmt):
     fresh_back, fresh = back.faces[len(kept_ids):], sc_new.faces[len(kept_ids):]
     if not np.isfinite(back.V).all() or [f.mat for f in fresh_back] != [f.mat for f in fresh] or sum(len(f.c) - 2 for f in fresh_back) != n_new:
         fail("Selbstpruefung fehlgeschlagen: die neuen Flaechen sind in der Datei nicht wie vorgesehen (Material, Zahlen) (%s)." % dst)
+    _check_orientation(src_scene, back, dst)
     return n_kept, n_new
 
 
@@ -1026,7 +1166,7 @@ def edit_scene(sc, region, mode, shape="auto", axis="auto", scale=1.0, material=
             kind, ax = choose_shape(region, shape, axis)
         centre = (lo + hi) / 2
         half = (hi - lo) / 2 * float(scale)
-        half = np.maximum(half, 0.025 * float(half.max()) + 1e-12)       # ein flaches Element (z. B. eine Platte) ergibt keinen Ersatz mit Dicke null
+        half = _min_half(half)                                           # ein flaches Element (z. B. eine Platte) ergibt keinen Ersatz mit Dicke null
         plo, phi_ = centre - half, centre + half
         mat = material if material else (region["materials"][0] if region["materials"] else None)
         uvs = [float(t) for i in removed for c in sc.faces[i].c if c[1] >= 0 for t in sc.vt[c[1]].split()[:2]]

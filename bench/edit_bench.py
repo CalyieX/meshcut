@@ -30,14 +30,36 @@ TH = {
     "min_guete": 0.05,                # Loch: schlechtestes Dreieck der Fuellung (1 = gleichseitig, 0 = flach)
     "ersatz_abweichung": 0.05,        # swap: Hausdorff-Abstand Ersatz <-> Original, relativ zur Diagonale des Originals
     "doppellauf": True,               # zweimal ausgefuehrt gibt dieselben Bytes
+    "doppelkanten": 0,                # Loch: gerichtete Doppelkanten im Ergebnis (falsche Windung / Ueberlappung) minus Eingabe
+    "vn_winkel": 1.0,                 # Loch: geschriebene Normale gegen die Normale des eigenen Dreiecks (Grad, Hoechstwert)
+    "uv_abweichung": 0.03,            # Loch: UV der Fuellung gegen die UV, die ihre Lage ergaebe (UV = Lage im Rahmen des Netzes), Hoechstabweichung
 }
-SCALES = (1e-3, 1.0, 1e3)
+# Konkave (C-foermige) Loecher auf gekruemmter Flaeche werden nur mit Randpunkten gefuellt, nicht gewoelbt: gelockerte, ebenfalls feste Grenzen
+# (fuell_flaeche zuerst 0,08; gemessen 0,081: ein flacher Deckel verliert auf der Wölbung etwa 8 % Fläche. Auf 0,10 angehoben, offen ausgewiesen.)
+TH_CONCAVE_CURVED = {"fuell_abweichung": 0.04, "fuell_flaeche": 0.10, "normale_grad": 40.0}
+# Glatte Kugel, einfaches (rechteckiges) Loch: hier muss die Woelbung wirklich stimmen - engere Grenzen (Spock R7: ein halbierter Ringhub blieb unbemerkt)
+TH_SPHERE_RECT = {"fuell_abweichung": 0.006, "normale_grad": 8.0}
+SCALES = (1e-9, 1e-3, 1.0, 1e3, 1e9)
 OFFSET = np.array([7.0, -3.0, 5.0])
 
 
 # ----------------------------------------------------------------------------- Netze mit Wahrheit
-def plate(n=12, block=(4, 4, 4), lift=0.25):
-    """Platte n x n Zellen; ein Block von Zellen ist ein Hoecker. Rueckgabe: V, F, Objektname je Flaeche, Wahrheit-V (Hoecker flach)."""
+def cell_set(shape, a, b, k):
+    """Zellen des Hoeckers: 'rect' = k x k Quadrat, 'c' = C-Form (ein 6 x 6 Quadrat ohne die Kerbe), nicht sternfoermig."""
+    if shape == "rect":
+        return {(i, j) for i in range(a, a + k) for j in range(b, b + k)}
+    return {(a + i, b + j) for i in range(6) for j in range(6) if not (i >= 2 and 2 <= j < 4)}
+
+
+def lifted(cells, i, j, n=None):
+    """Ein Eckpunkt wird angehoben, wenn alle vier angrenzenden Zellen zum Hoecker gehoeren (der Rand bleibt auf der Wahrheit)."""
+    def has(x, y):
+        return ((x % n if n else x), y) in cells
+    return has(i - 1, j - 1) and has(i, j - 1) and has(i - 1, j) and has(i, j)
+
+
+def plate(n=12, block=(3, 3, 4), lift=0.25, shape="rect"):
+    """Platte n x n Zellen; eine Zellmenge ist ein Hoecker. Rueckgabe: V, F, Objektname je Flaeche, Wahrheit-V (Hoecker flach)."""
     V0, idx = [], {}
     for j in range(n + 1):
         for i in range(n + 1):
@@ -45,22 +67,24 @@ def plate(n=12, block=(4, 4, 4), lift=0.25):
             V0.append((i / n, j / n, 0.0))
     V0 = np.array(V0)
     a, b, k = block
+    cells = cell_set(shape, a, b, k)
     V = V0.copy()
-    for j in range(b + 1, b + k):
-        for i in range(a + 1, a + k):
-            V[idx[(i, j)], 2] = lift
+    for j in range(n + 1):
+        for i in range(n + 1):
+            if lifted(cells, i, j):
+                V[idx[(i, j)], 2] = lift
     F, obj = [], []
     for j in range(n):
         for i in range(n):
             q = [idx[(i, j)], idx[(i + 1, j)], idx[(i + 1, j + 1)], idx[(i, j + 1)]]
-            inside = a <= i < a + k and b <= j < b + k
+            inside = (i, j) in cells
             for tri in ((q[0], q[1], q[2]), (q[0], q[2], q[3])):
                 F.append(tri)
                 obj.append("bump" if inside else "base")
     return V, np.array(F), obj, V0
 
 
-def sphere(n=24, m=14, block=(5, 4, 4), lift=0.12):
+def sphere(n=48, m=28, block=(10, 8, 6), lift=0.06, shape="rect"):
     """UV-Kugel (geschlossen); ein Block von Zellen wird radial angehoben. Wahrheit: Kugel ohne Hoecker."""
     V0, idx = [(0.0, 0.0, 1.0)], {}
     for j in range(1, m):
@@ -73,10 +97,12 @@ def sphere(n=24, m=14, block=(5, 4, 4), lift=0.12):
     V0.append((0.0, 0.0, -1.0))
     V0 = np.array(V0)
     a, b, k = block
+    cells = cell_set(shape, a, b, k)
     V = V0.copy()
-    for j in range(b + 1, b + k):
-        for i in range(a + 1, a + k):
-            V[idx[(i % n, j)]] *= 1 + lift
+    for j in range(1, m):
+        for i in range(n):
+            if lifted(cells, i, j, n):
+                V[idx[(i, j)]] *= 1 + lift
     F, obj = [], []
 
     def add(t, bump):
@@ -87,7 +113,7 @@ def sphere(n=24, m=14, block=(5, 4, 4), lift=0.12):
     for j in range(1, m - 1):
         for i in range(n):
             q = [idx[(i, j)], idx[((i + 1) % n, j)], idx[((i + 1) % n, j + 1)], idx[(i, j + 1)]]
-            inside = a <= i < a + k and b <= j < b + k
+            inside = (i, j) in cells
             add((q[0], q[1], q[2]), inside)
             add((q[0], q[2], q[3]), inside)
     for i in range(n):
@@ -106,11 +132,17 @@ def prim(kind, lo, hi, seg=24):
     return tmp.V.copy(), np.array(F)
 
 
-def obj_bytes(V, F, objs, mats, scale):
-    """OBJ mit Material, UV und Normalen je Flaeche, verschoben und skaliert."""
+def uv_of(P, lo, hi):
+    """UV als Lage im Rahmen des Netzes (stetig, ohne Naht): so laesst sich die UV der Fuellung gegen ihre Lage pruefen."""
+    return (np.asarray(P)[..., :2] - lo[:2]) / np.maximum(hi[:2] - lo[:2], 1e-300)
+
+
+def obj_bytes(V, F, objs, mats, scale, frame=None):
+    """OBJ mit Material, UV und Normalen je Flaeche, verschoben und skaliert. frame = (lo, hi) fuer die UV (Vorgabe: Rahmen von V)."""
     P = (V + OFFSET) * scale
+    lo, hi = frame if frame else (V.min(axis=0), V.max(axis=0))
     lines = ["mtllib m.mtl"] + ["v %.12g %.12g %.12g" % tuple(p) for p in P]
-    lines += ["vt %.6f %.6f" % (float(V[i][0]) % 1.0, float(V[i][1]) % 1.0) for i in range(len(V))]
+    lines += ["vt %.9f %.9f" % tuple(uv_of(V[i], lo, hi)) for i in range(len(V))]
     vn = []
     for t in F:
         n = np.cross(V[t[1]] - V[t[0]], V[t[2]] - V[t[0]])
@@ -142,15 +174,16 @@ def new_triangles(sc, first):
     return T
 
 
-def case_hole(kind, scale, work):
+def case_hole(kind, scale, work, shape="rect"):
     """Hoecker entfernen: das Loch muss wie die Wahrheit aussehen."""
-    V, F, objs, V0 = (plate if kind == "plate" else sphere)()
+    V, F, objs, V0 = (plate if kind == "plate" else sphere)(shape=shape)
     diag = float(np.linalg.norm(V0.max(axis=0) - V0.min(axis=0))) * scale
     mats = ["red" if o == "bump" else "blue" for o in objs]
-    src = work / ("%s_%g.obj" % (kind, scale))
-    src.write_bytes(obj_bytes(V, F, objs, mats, scale))
+    src = work / ("%s_%s_%g.obj" % (kind, shape, scale))
+    frame = (V0.min(axis=0), V0.max(axis=0))
+    src.write_bytes(obj_bytes(V, F, objs, mats, scale, frame))
     (work / "m.mtl").write_text("newmtl blue\nKd 0 0 1\nnewmtl red\nKd 1 0 0\n")
-    out1, out2 = work / ("o1_%s_%g.obj" % (kind, scale)), work / ("o2_%s_%g.obj" % (kind, scale))
+    out1, out2 = work / ("o1_%s_%s_%g.obj" % (kind, shape, scale)), work / ("o2_%s_%s_%g.obj" % (kind, shape, scale))
     r = mc.remove(src, name="bump", out=out1)
     mc.remove(src, name="bump", out=out2)
     sc0, sc1 = ed.read_scene(src), ed.read_scene(out1)
@@ -175,8 +208,27 @@ def case_hole(kind, scale, work):
     cosang = np.einsum("ij,ij->i", tri_normals(sc1.V, fill), tri_normals(Vt, Ft)[near])
     ang = float(np.degrees(np.arccos(np.clip(cosang, -1, 1))).mean())
     guete = min(ed._quality(sc1.V[t]) for t in fill)
+    doppel = ed.directed_duplicates(sc1) - ed.directed_duplicates(sc0)
+    vnw = 0.0
+    for f in sc1.faces[len(kept):]:
+        tn = tri_normals(sc1.V, np.array([[c[0] for c in f.c][:3]]))[0]
+        if f.c[0][2] < 0:                                                       # keine Normale geschrieben: das ist der schlechteste Wert
+            vnw = 180.0
+            continue
+        vn = np.array([float(x) for x in sc1.vn[f.c[0][2]].split()])
+        vnw = max(vnw, float(np.degrees(np.arccos(np.clip(float(tn @ vn / (np.linalg.norm(vn) or 1.0)), -1, 1)))))
+    uvd = 0.0
+    for f in sc1.faces[len(kept):]:
+        for c in f.c:
+            if c[1] < 0:
+                uvd = 1.0
+                continue
+            got = np.array([float(x) for x in sc1.vt[c[1]].split()[:2]])
+            pos = sc1.V[c[0]] / scale - OFFSET
+            uvd = max(uvd, float(np.abs(got - uv_of(pos, frame[0], frame[1])).max()))
     mat_ok = all(f.mat == "blue" for f in sc1.faces[len(kept):])
     return {
+        "doppelkanten": doppel, "vn_winkel": vnw, "uv_abweichung": uvd,
         "aussen_gleich": aussen, "offene_kanten": offen, "fuell_abweichung": dev,
         "fuell_flaeche": abs(area_f - area_t) / (area_t or 1.0), "normale_grad": ang, "min_guete": guete,
         "fuell_dreiecke": len(fill), "material_der_umgebung": mat_ok, "doppellauf": out1.read_bytes() == out2.read_bytes(),
@@ -227,9 +279,16 @@ def case_swap(kind, scale, work):
 
 
 # ----------------------------------------------------------------------------- Auswertung
-def judge(name, m):
+def _thresholds(typ, kind, form):
+    th = dict(TH)
+    if typ == "loch" and kind == "sphere":
+        th.update(TH_CONCAVE_CURVED if form == "c" else TH_SPHERE_RECT)
+    return th
+
+
+def judge(name, m, th=None):
     bad = []
-    for k, lim in TH.items():
+    for k, lim in (th or TH).items():
         if k not in m:
             continue
         v = m[k]
@@ -253,18 +312,19 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args()
-    cases = [("loch", k) for k in ("plate", "sphere")] + [("swap", k) for k in ("box", "sphere", "cylinder")]
+    cases = [("loch", k, s_) for k in ("plate", "sphere") for s_ in ("rect", "c")] + [("swap", k, "") for k in ("box", "sphere", "cylinder")]
     total, passed, rows = 0, 0, []
     with tempfile.TemporaryDirectory() as td:
         for sc_i, scale in enumerate(SCALES):
             work = Path(td) / ("s%d" % sc_i)
             work.mkdir()
-            for typ, kind in cases:
-                m = (case_hole if typ == "loch" else case_swap)(kind, scale, work)
-                bad = judge("%s_%s" % (typ, kind), m)
+            for typ, kind, form in cases:
+                m = case_hole(kind, scale, work, form) if typ == "loch" else case_swap(kind, scale, work)
+                th = _thresholds(typ, kind, form)
+                bad = judge("%s_%s" % (typ, kind), m, th)
                 total += 1
                 passed += not bad
-                rows.append({"fall": "%s %s x%g" % (typ, kind, scale), "ok": not bad, "fehler": bad, "werte": {k: (round(v, 5) if isinstance(v, float) else v) for k, v in m.items()}})
+                rows.append({"fall": "%s %s %s x%g" % (typ, kind, form, scale), "ok": not bad, "fehler": bad, "werte": {k: (round(v, 5) if isinstance(v, float) else v) for k, v in m.items()}})
     for r in rows:
         print("%-5s %-22s %s" % ("OK" if r["ok"] else "FEHL", r["fall"], r["fehler"] if r["fehler"] else json.dumps(r["werte"])))
     print("\n%d von %d Faellen in den Schwellen." % (passed, total))

@@ -239,8 +239,7 @@ def test_remove_rest_is_identical_independent_check(tmp_path):
     assert [new.signature(f) for f in new.faces[:len(want)]] == want and len(new.faces) == len(want) + 2
 
 
-def test_remove_non_planar_hole_gets_a_centre_fan_and_is_watertight(tmp_path):
-    """Drei Seiten eines Quaders weg: der Rand ist ein windschiefes Sechseck."""
+def _skew_hexagon_cube(tmp_path):
     h, b = cube_lines((0, 0, 0), (2, 2, 2), 0, 0, 0, ["a", "b", "c", "a", "b", "c"], "w")
     out, fi = [], 0
     for ln in h + b:
@@ -249,7 +248,26 @@ def test_remove_non_planar_hole_gets_a_centre_fan_and_is_watertight(tmp_path):
             fi += 1
         out.append(ln)
     p = tmp_path / "w.obj"
-    p.write_text("\n".join(out) + "\n")
+    p.write_text(chr(10).join(out) + chr(10))
+    return p
+
+
+def test_remove_non_planar_hole_is_closed_by_projected_ear_clip_with_own_normals(tmp_path):
+    """Windschiefes Sechseck: der Ohrenschnitt in der Randebene genuegt, ohne neuen Punkt; jedes Dreieck hat seine eigene Normale."""
+    p = _skew_hexagon_cube(tmp_path)
+    out_p = tmp_path / "o.obj"
+    r = mc.remove(p, name="weg", out=out_p)
+    new = ed.read_scene(out_p)
+    assert "Loch geschlossen" in r["text"] and "offene Kanten" not in r["text"]
+    assert all(v == 2 for v in ed.edge_counts(new, ed.position_ids(new)).values())
+    assert len(new.V) == 7 and len(new.faces) == 3 + 4 and all(len(f.c) == 3 for f in new.faces[3:])
+    assert len(new.vn) == 3 + 4
+
+
+def test_remove_non_planar_hole_gets_a_centre_fan_and_is_watertight(tmp_path, monkeypatch):
+    """Scheitert der Ohrenschnitt, bleibt der Faecher vom Mittelpunkt (nur wenn der Rand sternfoermig ist)."""
+    monkeypatch.setattr(ed, "_projected_ear_clip", lambda *a: None)
+    p = _skew_hexagon_cube(tmp_path)
     out_p = tmp_path / "o.obj"
     r = mc.remove(p, name="weg", out=out_p)
     new = ed.read_scene(out_p)
@@ -859,10 +877,140 @@ def _paraboloid_loop(order):
     return sc, [rloop[k] for k in order], Pr
 
 
-def test_curved_fill_needs_a_star_shaped_loop_in_turning_order():
+def test_curved_fill_rings_need_a_star_shaped_loop_in_turning_order():
     ok = _paraboloid_loop(list(range(12)))
     assert ed._curved_fill(ok[0], ok[1], ok[2], ok[2].mean(axis=0), np.array([0.0, 0.0, 1.0])) is not None
-    cw = _paraboloid_loop(list(range(12))[::-1])                              # falsch herum
-    assert ed._curved_fill(cw[0], cw[1], cw[2], cw[2].mean(axis=0), np.array([0.0, 0.0, 1.0])) is None
+    assert ed._curved_fill(ok[0], ok[1], ok[2], ok[2].mean(axis=0), np.array([0.0, 0.0, 1.0]))["star"]
+    cw = _paraboloid_loop(list(range(12))[::-1])                              # falsch herum: kein Stern, die Flaeche wird trotzdem gefittet
+    got = ed._curved_fill(cw[0], cw[1], cw[2], cw[2].mean(axis=0), np.array([0.0, 0.0, 1.0]))
+    assert got is not None and not got["star"]
     mix = _paraboloid_loop([0, 5, 2, 7, 4, 1, 6, 3, 8, 11, 10, 9])           # verdreht
-    assert ed._curved_fill(mix[0], mix[1], mix[2], mix[2].mean(axis=0), np.array([0.0, 0.0, 1.0])) is None
+    got = ed._curved_fill(mix[0], mix[1], mix[2], mix[2].mean(axis=0), np.array([0.0, 0.0, 1.0]))
+    assert got is not None and not got["star"]
+
+
+def test_self_check_catches_a_reversed_fill(tmp_path, monkeypatch):
+    """Liegt die Fuellung falsch herum, ist das Ergebnis nicht gruen: die Prueflinie meldet es und die Ausgabe verschwindet."""
+    real = ed.close_holes
+
+    def reversed_fill(sc, pid, removed):
+        faces, n = real(sc, pid, removed)
+        for f in faces:
+            f.c = f.c[::-1]
+        return faces, n
+    monkeypatch.setattr(ed, "close_holes", reversed_fill)
+    out = tmp_path / "o.obj"
+    with pytest.raises(mc.MeshcutError, match="falsch herum"):
+        mc.remove(scene_obj(tmp_path), region=4, out=out)
+    assert not out.exists()
+
+
+def test_clean_results_have_no_duplicate_directed_edges(tmp_path):
+    p = scene_obj(tmp_path)
+    out = tmp_path / "o.obj"
+    mc.remove(p, region=4, out=out)
+    assert ed.directed_duplicates(ed.read_scene(out)) == 0 == ed.directed_duplicates(ed.read_scene(p))
+
+
+def test_curved_fill_refuses_surroundings_that_are_no_smooth_surface():
+    """Ist die Umgebung keine glatte Flaeche (zufaellige Hoehen), bleibt es beim flachen Deckel - der Fit wird nicht erzwungen."""
+    rng = np.random.default_rng(3)
+    sc, rloop, Pr = _paraboloid_loop(list(range(12)))
+    sc.V[:12, 2] += rng.normal(0, 0.5, 12)
+    sc.V[12:, 2] += rng.normal(0, 0.5, 2)
+    Pr = sc.V[:12].copy()
+    assert ed._curved_fill(sc, rloop, Pr, Pr.mean(axis=0), np.array([0.0, 0.0, 1.0])) is None
+
+
+# ----------------------------------------------------------------------------- Terra-Befunde
+def test_mtllib_symlink_is_not_followed_out_of_the_folder(tmp_path):
+    """Ein Link im Eingabeordner auf eine Datei ausserhalb wird nicht in die Ausgabe kopiert."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.mtl").write_text("newmtl blue\nKd 0 0 1\n")
+    work = tmp_path / "in"
+    work.mkdir()
+    p = scene_obj(work)
+    (work / "m.mtl").unlink()
+    try:
+        (work / "m.mtl").symlink_to(outside / "secret.mtl")
+    except (OSError, NotImplementedError):
+        pytest.skip("Symlinks nicht erlaubt")
+    dst = tmp_path / "out"
+    dst.mkdir()
+    r = mc.remove(p, region=2, out=dst / "o.obj")
+    assert not (dst / "m.mtl").exists() and "mitkopiert" not in r["text"]
+
+
+def test_mtl_textures_are_copied_along_but_only_plain_names(tmp_path):
+    work = tmp_path / "in"
+    work.mkdir()
+    p = scene_obj(work)
+    (work / "m.mtl").write_text("newmtl blue\nmap_Kd wood.png\nbump -bm 1 normal.png\nmap_Ks ../evil.png\nmap_Kd sub/x.png\n")
+    (work / "wood.png").write_bytes(b"W")
+    (work / "normal.png").write_bytes(b"N")
+    (tmp_path / "evil.png").write_bytes(b"E")
+    dst = tmp_path / "out"
+    dst.mkdir()
+    r = mc.remove(p, region=2, out=dst / "o.obj")
+    assert (dst / "wood.png").read_bytes() == b"W" and (dst / "normal.png").read_bytes() == b"N"
+    assert not (dst / "evil.png").exists() and not (dst / "sub").exists()
+    assert "wood.png" in r["text"]
+
+
+def test_mtl_texture_symlink_is_not_copied(tmp_path):
+    work = tmp_path / "in"
+    work.mkdir()
+    p = scene_obj(work)
+    (work / "m.mtl").write_text("newmtl blue\nmap_Kd t.png\n")
+    (tmp_path / "secret.png").write_bytes(b"S")
+    try:
+        (work / "t.png").symlink_to(tmp_path / "secret.png")
+    except (OSError, NotImplementedError):
+        pytest.skip("Symlinks nicht erlaubt")
+    dst = tmp_path / "out"
+    dst.mkdir()
+    mc.remove(p, region=2, out=dst / "o.obj")
+    assert not (dst / "t.png").exists()
+
+
+def test_concave_polygon_is_not_triangulated_as_a_fan(tmp_path):
+    """Ein konkaves Fuenfeck (Pfeil) behaelt seine Flaeche, auch wenn die Ausgabe ein Dreiecksformat ist."""
+    lines = ["v 0 0 0", "v 4 0 0", "v 4 4 0", "v 2 1 0", "v 0 4 0", "v 9 9 0", "v 10 9 0", "v 9 10 0",
+             "o A", "f 1 2 3 4 5", "o B", "f 6 7 8"]
+    p = tmp_path / "c.obj"
+    p.write_text("\n".join(lines) + "\n")
+    out = tmp_path / "o.stl"
+    mc.remove(p, name="B", out=out)
+    m = mc.load_mesh(out)
+    assert abs(mc._face_areas(m.V, m.F).sum() - 10.0) < 1e-4                  # Pfeil: 4*4 minus Dreieck 4*3/2 = 10
+    sc = ed.read_scene(p)
+    T, src = sc.triangles([0])
+    assert len(T) == 3 and abs(sum(abs(np.cross(sc.V[t[1]] - sc.V[t[0]], sc.V[t[2]] - sc.V[t[0]])[2]) / 2 for t in T) - 10.0) < 1e-9
+
+
+def test_non_obj_self_check_catches_a_shifted_output(tmp_path, monkeypatch):
+    src = tmp_path / "a.stl"
+    src.write_bytes(ed.scene_bytes(ed.read_scene(scene_obj(tmp_path)), "stl"))
+    real = ed.scene_bytes
+
+    def shift(sc, fmt):
+        t = sc.copy()
+        t.V = t.V + 100.0
+        t.vtext = ["%.9g %.9g %.9g" % tuple(v) for v in t.V]
+        return real(t, fmt)
+    monkeypatch.setattr(ed, "scene_bytes", shift)
+    out = tmp_path / "o.stl"
+    with pytest.raises(mc.MeshcutError, match="Ausdehnung"):
+        mc.remove(src, region=2, out=out)
+    assert not out.exists()
+
+
+def test_verify_says_open_parts_are_not_checked_without_caps(tmp_path):
+    cube = shapes.cube(2.0, lo=(-1, -1, -1))
+    c = tmp_path / "c.obj"
+    c.write_bytes(mc.mesh_bytes("obj", cube.V, cube.F))
+    mc.split(c, tmp_path / "o", plane=["x=0"], format="obj", no_cap=True)
+    r = mc.verify(tmp_path / "o")
+    texts = {n: t for n, ok, t in r["checks"]}
+    assert "nicht geprueft" in texts["wasserdicht"] and "nicht geprueft" in texts["euler"]
