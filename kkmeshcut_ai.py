@@ -111,7 +111,7 @@ class KMeansSegmenter(Segmenter):
     name = "kmeans"
 
     def labels(self, mesh, parts=None):
-        k = int(parts or 2)
+        k = 2 if parts is None else int(parts)                  # 0 ist keine Teilezahl und wird abgelehnt, nicht still zu 2
         if k < 2 or k > mc.MAX_PARTS:
             fail("kmeans: Teilezahl zwischen 2 und %d noetig." % mc.MAX_PARTS)
         X = triangle_centroids(mesh)

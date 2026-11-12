@@ -1962,14 +1962,14 @@ def test_a_result_without_positive_volume_is_refused_by_the_self_check():
 
 
 # ============================================================================= Spock R18
-def test_a_volume_change_over_ten_percent_is_always_reported_with_the_number(tmp_path):
+def test_a_volume_change_over_two_percent_is_always_reported_with_the_number(tmp_path):
     """Spock R18: schraege Kappen auf Ellipsoiden wurden mit -56 Prozent Volumen gefuellt, ohne dass der Bericht es erwaehnte."""
     p, v0 = _scaled_sphere_obj(tmp_path, (1, 0.6, 0.3), 0.2)
     r = mc.remove(p, name="red", out=tmp_path / "o.obj")
     assert "Das Volumen aendert sich um -" in r["text"]
 
 
-def test_a_volume_change_under_ten_percent_is_not_noise(tmp_path):
+def test_a_volume_change_under_two_percent_is_not_noise(tmp_path):
     p, v0 = _scaled_sphere_obj(tmp_path, (1, 1, 1), 0.9)
     r = mc.remove(p, name="red", out=tmp_path / "o.obj")
     assert "Das Volumen aendert sich" not in r["text"]
@@ -1994,3 +1994,39 @@ def test_scene_volume_matches_the_exact_mesh_volume(tmp_path):
     p.write_text("\n".join(lines) + "\n")
     sc = ed.read_scene(p)
     assert abs(ed._scene_volume(sc) - mc.volume_area(m.V, m.F)[0]) < 1e-9
+
+
+# ============================================================================= Spock R20
+def test_fan_normals_match_the_newell_vector_for_triangles_and_quads():
+    sc = ed.Scene()
+    sc.V = np.array([[0, 0, 0], [2, 0, 0], [2, 3, 0], [0, 3, 0], [0, 0, 5.0]])
+    sc.faces = [ed.Face([(0, -1, -1), (1, -1, -1), (2, -1, -1)]), ed.Face([(0, -1, -1), (1, -1, -1), (2, -1, -1), (3, -1, -1)]),
+                ed.Face([(0, -1, -1), (2, -1, -1), (4, -1, -1)])]
+    got = ed._fan_normals(sc, range(3))
+    for j, f in enumerate(sc.faces):
+        P = sc.V[[c[0] for c in f.c]]
+        assert np.allclose(got[j], np.cross(P, np.roll(P, -1, axis=0)).sum(axis=0))
+
+
+def test_kmeans_refuses_zero_parts_instead_of_taking_two():
+    import kkmeshcut_ai as ai
+    with pytest.raises(mc.MeshcutError, match="Teilezahl"):
+        ai.KMeansSegmenter().labels(shapes.cube(1.0, sub=2), parts=0)
+
+
+def test_huge_coordinates_give_a_clear_message_not_a_numpy_one(tmp_path):
+    m = shapes.sphere(24, 16)
+    lines = ["v %.17g %.17g %.17g" % tuple(float(x) * 1e80 for x in q) for q in m.V]
+    cur = None
+    for f in m.F:
+        mat = "red" if m.V[f].mean(axis=0)[2] > 0.5 else "blue"
+        if mat != cur:
+            lines.append("usemtl " + mat)
+            cur = mat
+        lines.append("f %d %d %d" % tuple(int(i) + 1 for i in f))
+    p = tmp_path / "h.obj"
+    p.write_text("\n".join(lines) + "\n")
+    try:
+        mc.remove(p, name="red", out=tmp_path / "o.obj")
+    except mc.MeshcutError as e:
+        assert "SVD" not in str(e)

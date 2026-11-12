@@ -33,7 +33,7 @@ SIZE_RANGE = (64, 4096)                                          # --size des Ue
 CURVED_SPHERE_MAX_RISE = 0.37                                    # Anteil der Diagonale des Randes: eine Halbkugel hat die Hoehe R bei einer Diagonale von rund 2,83 R (0.354), dazu Spielraum fuer den gezackten Rand
 STAR_TOL = 1e-9                                                  # Rundungsspielraum der Winkelreihenfolge des Randes (Bogenmass)
 STEADY_VOLUME = 0.02                                             # darunter gilt das Volumen eines Koerpers als unveraendert
-VOLUME_NOTE = 0.1                                                # eine Volumenaenderung ueber diesem Anteil wird im Bericht genannt
+VOLUME_NOTE = 0.02                                               # eine Volumenaenderung ueber diesem Anteil wird im Bericht genannt
 CURVED_RIM_MISS = 0.05                                           # Hoehenfunktion der Kugel darf den Rand hoechstens so weit verfehlen (Anteil der Diagonale)
 CURVED_SPHERE_FIT = 0.0002                                       # Kugelfit: Abweichung von Rand und erstem Ring (Anteil der Diagonale); ein Ellipsoid trifft eine Kugel nur grob und bekommt keine
 BENT_RING = 0.003                                                # liegt der erste Nachbarring weiter als dies (Anteil der Diagonale) neben der Randebene, ist die Umgebung gewoelbt
@@ -377,8 +377,16 @@ def component_labels(sc, pid):
 
 def _fan_normals(sc, face_ids):
     """Flaechenvektor (Betrag = doppelte Flaeche) je Flaeche (Newell)."""
-    out = np.zeros((len(face_ids), 3))
-    for j, i in enumerate(face_ids):
+    ids = list(face_ids)
+    out = np.zeros((len(ids), 3))
+    tri = [j for j, i in enumerate(ids) if len(sc.faces[i].c) == 3]
+    if tri:                                                       # Dreiecke gesammelt: Newell = Kreuzprodukt zweier Kanten
+        T = np.array([[x[0] for x in sc.faces[ids[j]].c] for j in tri], dtype=np.int64)
+        out[tri] = np.cross(sc.V[T[:, 1]] - sc.V[T[:, 0]], sc.V[T[:, 2]] - sc.V[T[:, 0]])
+    done = set(tri)
+    for j, i in enumerate(ids):
+        if j in done:
+            continue
         c = sc.faces[i].c
         P = sc.V[[x[0] for x in c]]
         out[j] = np.cross(P, np.roll(P, -1, axis=0)).sum(axis=0)
@@ -901,7 +909,10 @@ def close_holes(sc, pid, removed):
         tris, flat, curved = None, False, None
         if nl > 0 and diam > 0:
             n = n / nl
-            curved = _curved_fill(sc, rloop, Pr, cen, n)
+            try:
+                curved = _curved_fill(sc, rloop, Pr, cen, n)
+            except np.linalg.LinAlgError:
+                fail("Die Koordinaten sind zu gross oder zu klein fuer die Fuellung (Zahlenbereich der Gleitkommazahlen); das Netz vorher skalieren.")
             flat = float(np.abs((Pr - cen) @ n).max()) <= HOLE_PLANAR * diam
             if curved is None or not curved["star"]:             # keine Woelbung gefunden: die Fuellung wird flach, und das Volumen schrumpft, wenn die Umgebung gewoelbt ist
                 ring = np.vstack([sc.V[[c[0] for c in sc.faces[x[4]].c]] for x in rloop])

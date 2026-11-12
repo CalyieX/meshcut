@@ -337,6 +337,10 @@ MUTANTS = [
     ('r20 edit: Volumenaenderung verschwiegen', 'if v0 > 0 and abs(v1 - v0) > VOLUME_NOTE * v0:', 'if False:', 'kkmeshcut_edit.py'),
     ('r20 edit: Volumenhinweis immer', 'abs(v1 - v0) > VOLUME_NOTE * v0:', 'abs(v1 - v0) > -1.0 * v0:', 'kkmeshcut_edit.py'),
     ('r21 edit: Gewoelbt-Hinweis bei gleichem Volumen', 'if getattr(out, "bent_holes", 0) and not steady:', 'if getattr(out, "bent_holes", 0):', 'kkmeshcut_edit.py'),
+    ('r22 edit: Fan-Normale Dreieck falsch', 'np.cross(sc.V[T[:, 1]] - sc.V[T[:, 0]], sc.V[T[:, 2]] - sc.V[T[:, 0]])', 'np.cross(sc.V[T[:, 1]], sc.V[T[:, 2]])', 'kkmeshcut_edit.py'),
+    ('r22 edit: LinAlgError nicht gefangen', 'except np.linalg.LinAlgError:', 'except ZeroDivisionError:', 'kkmeshcut_edit.py'),
+    ('r22 ai: parts=0 wird zu 2', 'k = 2 if parts is None else int(parts)', 'k = int(parts or 2)', 'kkmeshcut_ai.py'),
+    ('r22 edit: Volumenhinweis nie', 'abs(v1 - v0) > VOLUME_NOTE * v0:', 'abs(v1 - v0) > 1e9 * v0:', 'kkmeshcut_edit.py'),
     ('r21 edit: Volumen falsch gerechnet', 'float(np.einsum("ij,ij->", V[tri[:, 0]], np.cross(V[tri[:, 1]], V[tri[:, 2]]))) / 6.0', 'float(np.einsum("ij,ij->", V[tri[:, 0]], np.cross(V[tri[:, 1]], V[tri[:, 2]]))) / 3.0', 'kkmeshcut_edit.py'),
 ]
 
