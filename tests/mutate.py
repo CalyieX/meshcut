@@ -336,6 +336,8 @@ MUTANTS = [
     ('r19 edit: negatives Volumen durchgelassen', 'if _single_closed_solid(src_scene) and _scene_volume(src_scene) > 0 >= _scene_volume(back):', 'if False:', 'kkmeshcut_edit.py'),
     ('r20 edit: Volumenaenderung verschwiegen', 'if v0 > 0 and abs(v1 - v0) > VOLUME_NOTE * v0:', 'if False:', 'kkmeshcut_edit.py'),
     ('r20 edit: Volumenhinweis immer', 'abs(v1 - v0) > VOLUME_NOTE * v0:', 'abs(v1 - v0) > -1.0 * v0:', 'kkmeshcut_edit.py'),
+    ('r21 edit: Gewoelbt-Hinweis bei gleichem Volumen', 'if getattr(out, "bent_holes", 0) and not steady:', 'if getattr(out, "bent_holes", 0):', 'kkmeshcut_edit.py'),
+    ('r21 edit: Volumen falsch gerechnet', 'float(np.einsum("ij,ij->", V[tri[:, 0]], np.cross(V[tri[:, 1]], V[tri[:, 2]]))) / 6.0', 'float(np.einsum("ij,ij->", V[tri[:, 0]], np.cross(V[tri[:, 1]], V[tri[:, 2]]))) / 3.0', 'kkmeshcut_edit.py'),
 ]
 
 

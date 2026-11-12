@@ -32,6 +32,7 @@ SCALE_RANGE = (0.01, 100.0)                                      # --scale: daru
 SIZE_RANGE = (64, 4096)                                          # --size des Uebersichtsbildes in Pixeln                                    # mehr Dreiecke werden fuers Bild gleichmaessig ausgeduennt
 CURVED_SPHERE_MAX_RISE = 0.37                                    # Anteil der Diagonale des Randes: eine Halbkugel hat die Hoehe R bei einer Diagonale von rund 2,83 R (0.354), dazu Spielraum fuer den gezackten Rand
 STAR_TOL = 1e-9                                                  # Rundungsspielraum der Winkelreihenfolge des Randes (Bogenmass)
+STEADY_VOLUME = 0.02                                             # darunter gilt das Volumen eines Koerpers als unveraendert
 VOLUME_NOTE = 0.1                                                # eine Volumenaenderung ueber diesem Anteil wird im Bericht genannt
 CURVED_RIM_MISS = 0.05                                           # Hoehenfunktion der Kugel darf den Rand hoechstens so weit verfehlen (Anteil der Diagonale)
 CURVED_SPHERE_FIT = 0.0002                                       # Kugelfit: Abweichung von Rand und erstem Ring (Anteil der Diagonale); ein Ellipsoid trifft eine Kugel nur grob und bekommt keine
@@ -1306,31 +1307,32 @@ def _check_geometry(sc_new, back, dst):
         fail("Selbstpruefung fehlgeschlagen: Flaeche oder Ausdehnung der geschriebenen Datei weichen von der Szene ab (%s)." % dst)
 
 
-def _scene_volume(sc):
-    """Vorzeichenbehaftetes Volumen (Fan je Flaeche); bei einem geschlossenen, nach aussen gewundenen Netz positiv."""
-    if not len(sc.V):
-        return 0.0
-    tot = 0.0
-    V = sc.V
-    for f in sc.faces:
-        i = [c[0] for c in f.c]
-        for k in range(1, len(i) - 1):
-            tot += float(np.dot(V[i[0]], np.cross(V[i[k]], V[i[k + 1]])))
-    return tot / 6.0
-
-
-def _single_closed_solid(sc):
-    """Ein einziger geschlossener Koerper: nur dann sagt das Vorzeichen des Gesamtvolumens etwas ueber eine Fuellung (mehrere Koerper, auch nach innen gewundene, heben sich auf)."""
+def _scene_tris(sc):
+    """Alle Flaechen als Dreiecke (Fan), als Feld aus Eckpunkt-Nummern."""
     tri = []
     for f in sc.faces:
         i = [c[0] for c in f.c]
         for k in range(1, len(i) - 1):
             tri.append((i[0], i[k], i[k + 1]))
-    if not tri:
+    return np.array(tri, dtype=np.int64).reshape(-1, 3)
+
+
+def _scene_volume(sc, tri=None):
+    """Vorzeichenbehaftetes Volumen; bei einem geschlossenen, nach aussen gewundenen Netz positiv."""
+    tri = _scene_tris(sc) if tri is None else tri
+    if not len(sc.V) or not len(tri):
+        return 0.0
+    V = sc.V
+    return float(np.einsum("ij,ij->", V[tri[:, 0]], np.cross(V[tri[:, 1]], V[tri[:, 2]]))) / 6.0
+
+
+def _single_closed_solid(sc):
+    """Ein einziger geschlossener Koerper: nur dann sagt das Vorzeichen des Gesamtvolumens etwas ueber eine Fuellung (mehrere Koerper, auch nach innen gewundene, heben sich auf)."""
+    F = _scene_tris(sc)
+    if not len(F):
         return False
-    F = np.array(tri, dtype=np.int64)
-    er = mc.edge_report(F) if hasattr(mc, "edge_report") else None
-    return er is not None and er["watertight"] and mc.components(F) == 1
+    er = mc.edge_report(F)
+    return er["watertight"] and mc.components(F) == 1
 
 
 def _check_orientation(src_scene, back, dst):
@@ -1453,18 +1455,20 @@ def edit_scene(sc, region, mode, shape="auto", axis="auto", scale=1.0, material=
         prim_note = "%s (%s)" % ({"box": "Quader", "sphere": "Kugel", "cylinder": "Zylinder"}[kind], "xyz"[ax] if kind == "cylinder" else "ohne Achse")
     if uneven:
         hints.append("%d Loch/Loecher mit nicht ebenem Rand wurden flach gefuellt (Ohrenschnitt aus Randpunkten): die Fuellung folgt der Woelbung der Umgebung nicht." % uneven)
-    if getattr(out, "bent_holes", 0):
-        hints.append("%d Loch/Loecher liegen in einer gewoelbten Umgebung, fuer die keine passende Woelbung gefunden wurde (keine Kugel): sie wurden flach gefuellt, das Volumen schrumpft." % out.bent_holes)
     if prim is not None and prim[4] and prim[4] not in {f.mat for f in sc.faces}:
         shown_m = _plain(prim[4]) if sc.escaped else prim[4]
         hints.append("Das Material '%s' kommt in der Datei sonst nicht vor (Tippfehler?): es muss in der .mtl stehen, sonst bleibt der Ersatz ohne Material." % shown_m[:40])
     if ranking and ranking[0][0] > BAD_SHAPE:
         hints.append("Kein Kandidat passt gut (beste Abweichung %.2f der Diagonale): der Ersatz ist nur eine grobe Naeherung." % ranking[0][0])
     out.faces = [sc.faces[i] for i in kept] + new_faces
+    steady = False                                                # bei einem Koerper ohne spuerbare Volumenaenderung waere "das Volumen schrumpft" falsch
     if _single_closed_solid(sc):                                  # ein Koerper: die Volumenaenderung wird immer genannt, damit eine zu flache oder zu hohe Fuellung nie still bleibt
         v0, v1 = _scene_volume(sc), _scene_volume(out)
         if v0 > 0 and abs(v1 - v0) > VOLUME_NOTE * v0:
             hints.append("Das Volumen aendert sich um %+.0f %% (%.4g -> %.4g). Bei einem entfernten Teil ist das zu erwarten; sitzt das Loch in einer Woelbung, kann die Fuellung zu flach oder zu hoch sein." % (100.0 * (v1 - v0) / v0, v0, v1))
+        steady = v0 > 0 and abs(v1 - v0) <= STEADY_VOLUME * v0
+    if getattr(out, "bent_holes", 0) and not steady:
+        hints.append("%d Loch/Loecher liegen in einer gewoelbten Umgebung, fuer die keine passende Woelbung gefunden wurde (keine Kugel): sie wurden flach gefuellt, das Volumen schrumpft." % out.bent_holes)
     open_after = _boundary_edges(out, position_ids(out))
     report = {"entfernt": len(removed), "entfernte_dreiecke": int(sc.n_triangles(removed)), "neu": len(new_faces),
               "neue_dreiecke": int(sum(len(f.c) - 2 for f in new_faces)), "loecher_geschlossen": holes,

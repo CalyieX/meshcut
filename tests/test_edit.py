@@ -1973,3 +1973,24 @@ def test_a_volume_change_under_ten_percent_is_not_noise(tmp_path):
     p, v0 = _scaled_sphere_obj(tmp_path, (1, 1, 1), 0.9)
     r = mc.remove(p, name="red", out=tmp_path / "o.obj")
     assert "Das Volumen aendert sich" not in r["text"]
+
+
+# ============================================================================= Spock R19
+def test_box_with_two_triangles_removed_gets_no_false_curved_surroundings_hint(tmp_path):
+    """Spock R19: ein Quader ohne Volumenaenderung bekam 'gewoelbte Umgebung ... das Volumen schrumpft'."""
+    m = shapes.cube(1.0)
+    lines = ["v %r %r %r" % tuple(float(x) for x in p) for p in m.V]
+    lines += ["usemtl a"] + ["f %d %d %d" % tuple(int(i) + 1 for i in f) for f in m.F[:-2]] + ["usemtl b"] + ["f %d %d %d" % tuple(int(i) + 1 for i in f) for f in m.F[-2:]]
+    p = tmp_path / "c.obj"
+    p.write_text("\n".join(lines) + "\n")
+    r = mc.remove(p, name="b", out=tmp_path / "o.obj")
+    assert "gewoelbten Umgebung" not in r["text"]
+
+
+def test_scene_volume_matches_the_exact_mesh_volume(tmp_path):
+    m = shapes.sphere(24, 16)
+    lines = ["v %.17g %.17g %.17g" % tuple(float(x) for x in p) for p in m.V] + ["f %d %d %d" % tuple(int(i) + 1 for i in f) for f in m.F]
+    p = tmp_path / "s.obj"
+    p.write_text("\n".join(lines) + "\n")
+    sc = ed.read_scene(p)
+    assert abs(ed._scene_volume(sc) - mc.volume_area(m.V, m.F)[0]) < 1e-9
