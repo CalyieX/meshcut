@@ -2082,3 +2082,15 @@ def test_curved_surroundings_hint_stays_when_the_volume_shrinks_noticeably(tmp_p
     r = mc.remove(p, name="red", out=tmp_path / "o.obj")
     assert "gewoelbten Umgebung" in r["text"]
     assert ed.STEADY_VOLUME == 0.02
+
+
+# ============================================================================= Spock R23
+@pytest.mark.parametrize("fmt", ["stl", "glb"])
+@pytest.mark.parametrize("offset", [-3e-7, -1e-7, 1e-7, 3e-7])
+def test_plane_just_beside_a_vertex_ring_keeps_float32_parts_watertight(tmp_path, fmt, offset):
+    """Spock R23: eine Ebene 1e-7 neben einem Eckpunktring gab ohne --verify still nicht wasserdichte 32-Bit-Teile."""
+    m = shapes.sphere(16, 8)
+    src = tmp_path / "s.stl"
+    src.write_bytes(mc.mesh_bytes("stl", m.V * 10, m.F, "s"))
+    z = -9.238795325 + offset
+    mc.main(["split", str(src), str(tmp_path / "o"), "--plane", "z=%.10f" % z, "--format", fmt, "--verify"])

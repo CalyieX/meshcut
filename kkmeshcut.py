@@ -2260,6 +2260,21 @@ def centroid_labels(mesh, counts):
     return cell[:, 0] + counts[0] * (cell[:, 1] + counts[1] * cell[:, 2])
 
 
+SNAP_DEFAULT = 1e-12
+FLOAT32_SNAP = 4 * float(np.finfo(np.float32).eps)
+
+
+def _lost_in_float32(res):
+    """True, wenn ein Teil im Speicher wasserdicht ist, nach dem Runden auf float32 (so liest es jeder wieder ein) aber nicht mehr."""
+    for p in res.parts:
+        if len(p.F) == 0 or not edge_report(p.F, len(p.V))["watertight"]:
+            continue
+        V, F = weld_triangles(quantize(p.V, "float32")[p.F])
+        if not edge_report(F, len(V))["watertight"]:
+            return True
+    return False
+
+
 def cmd_split(a):
     mesh = load_mesh(a.input)
     if a.flip:
@@ -2315,7 +2330,14 @@ def cmd_split(a):
             planes, table = wedge_planes(cen, ax, a.wedges)
         if not (math.isfinite(a.snap) and 0 <= a.snap < 1e-3):
             fail("--snap: Zahl zwischen 0 und 0.001 noetig.")
-        res = split_planes(mesh, planes, cap=cap, table=table, mode="wedges" if a.wedges else ("grid" if (a.grid or a.max) else "plane"), snap=a.snap)
+        mode = "wedges" if a.wedges else ("grid" if (a.grid or a.max) else "plane")
+        res = split_planes(mesh, planes, cap=cap, table=table, mode=mode, snap=a.snap)
+        if cap and a.format in FLOAT32_FORMATS and a.snap == SNAP_DEFAULT and _lost_in_float32(res):
+            # Eine Ebene, die kaum neben einem Eckpunkt liegt, gibt im Teil Eckpunkte, die in float32 mit dem Nachbarn zusammenfallen: die Datei waere nicht wasserdicht.
+            # Dann zaehlen Eckpunkte innerhalb von 4 float32-Schritten als auf der Ebene (das verschiebt nichts, siehe --snap).
+            again = split_planes(mesh, planes, cap=cap, table=table, mode=mode, snap=FLOAT32_SNAP)
+            if not _lost_in_float32(again):
+                res = again
         for p in res.parts:
             er = edge_report(p.F, len(p.V))
             if cap and not er["watertight"]:

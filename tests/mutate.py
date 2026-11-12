@@ -81,7 +81,7 @@ MUTANTS = [
     ("dec_array dtype", 'if dt.str not in ("<i8", "<f8") or any(x < 0 for x in shape):', 'if False:'),
     ("OBJ konkav nur Faecher", "    if min(cr) >= 0:", "    if True:"),
     ("Zellen-Limit fehlt", "    if cells > MAX_PARTS:", "    if False:"),
-    ("Gitter komprimiert", 'mode="wedges" if a.wedges else ("grid" if (a.grid or a.max) else "plane")', 'mode="wedges" if a.wedges else "plane"'),
+    ("Gitter komprimiert", 'mode = "wedges" if a.wedges else ("grid" if (a.grid or a.max) else "plane")', 'mode = "wedges" if a.wedges else "plane"'),
     ("doppelte Eckpunkte-Fragmente behalten", "if poly[0] == poly[q] or poly[q] == poly[q + 1] or poly[0] == poly[q + 1]:", "if False:"),
     ('API info nicht gekapselt', 'raise MeshcutError((str(e).strip().splitlines() or [type(e).__name__])[0]) from e\n    return out.getvalue()', 'raise\n    return out.getvalue()'),
     ("ASCII-STL gross", "text, re.IGNORECASE)", "text)"),
@@ -348,6 +348,8 @@ MUTANTS = [
     ('r23 edit: Schwelle 0.5 Prozent', 'VOLUME_NOTE = 0.02 ', 'VOLUME_NOTE = 0.005 ', 'kkmeshcut_edit.py'),
     ('r24 edit: STEADY zehnfach', 'STEADY_VOLUME = 0.02', 'STEADY_VOLUME = 0.2', 'kkmeshcut_edit.py'),
     ('r24 edit: STEADY ohne Betrag', 'steady = v0 > 0 and abs(v1 - v0) <= STEADY_VOLUME * v0', 'steady = v0 > 0 and (v1 - v0) <= STEADY_VOLUME * v0', 'kkmeshcut_edit.py'),
+    ('r26 core: float32-Verlust nicht abgefangen', 'if cap and a.format in FLOAT32_FORMATS and a.snap == SNAP_DEFAULT and _lost_in_float32(res):', 'if False:', 'kkmeshcut.py'),
+    ('r26 core: float32-Schwelle zu klein', 'FLOAT32_SNAP = 4 * float(np.finfo(np.float32).eps)', 'FLOAT32_SNAP = 1e-9', 'kkmeshcut.py'),
     ('r21 edit: Volumen falsch gerechnet', 'float(np.einsum("ij,ij->", V[tri[:, 0]], np.cross(V[tri[:, 1]], V[tri[:, 2]]))) / 6.0', 'float(np.einsum("ij,ij->", V[tri[:, 0]], np.cross(V[tri[:, 1]], V[tri[:, 2]]))) / 3.0', 'kkmeshcut_edit.py'),
 ]
 
