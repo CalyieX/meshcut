@@ -714,10 +714,10 @@ def _sphere_height(a, b, w, nrim, diam):
         return None                                              # keine Kugel, oder kleiner als eine Halbkugel ueber dem Loch
     if float(np.ptp(w[:nrim])) > CURVED_RIM_FLAT:
         return None                                              # der Rand einer Kappe liegt (fast) in einer Ebene; ein verwundener Rand ist keine Kappe
-    off = float(w[:nrim].mean()) - cw
-    if abs(off) < 1e-3:                                          # Halbkugel: die Nachbarn liegen auf der anderen Seite der Kappe
-        off = float(w[:nrim].mean()) - float(w[nrim:].mean()) if len(w) > nrim else 1.0
-    sign = 1.0 if off > 0 else -1.0
+    # Die Kappe liegt auf der Seite der Randebene, von der die Nachbarflaechen wegfuehren (sie liegen auf der stehenden Kugelschale, nicht ueber dem Loch).
+    # Das Vorzeichen allein aus der Lage des Randes zum Kugelmittelpunkt zu nehmen, kippt bei Kappen ueber der Halbkugel auf die falsche Schale.
+    away = float(w[:nrim].mean()) - float(w[nrim:].mean()) if len(w) > nrim else float(w[:nrim].mean()) - cw
+    sign = 1.0 if away > 0 else -1.0
 
     def h(x, y_):
         x, y_ = x / diam, y_ / diam

@@ -1850,3 +1850,38 @@ def test_name_not_found_mentions_the_region_limit(tmp_path, monkeypatch):
     monkeypatch.setattr(ed, "MAX_REGIONS", 1)
     with pytest.raises(mc.MeshcutError, match="nicht nummeriert"):
         mc.remove(p, name="gibt-es-nicht", out=tmp_path / "o.obj")
+
+
+# ============================================================================= Spock R15
+@pytest.mark.parametrize("zc", [-0.2, -0.5, -0.8])
+def test_cap_larger_than_a_hemisphere_never_fills_on_the_standing_shell(tmp_path, zc):
+    """Spock R15: ab einer Kappe ueber der Halbkugel kippte das Vorzeichen, die Fuellung lag auf der stehenden Schale (Rest ohne Volumen)."""
+    p = _sphere_obj_with_cap(tmp_path, zc)
+    out = tmp_path / "o.obj"
+    cap_h = 1.0 + zc
+    cap_volume = math.pi * cap_h * cap_h * (3.0 - cap_h) / 3.0                     # was stehen bleibt: Kugelkappe der Hoehe 1 + zc
+    try:
+        mc.remove(p, name="red", out=out)
+    except mc.MeshcutError:
+        return                                                                    # ablehnen ist erlaubt, falsch fuellen nicht
+    m = mc.load_mesh(out)
+    assert mc.volume_area(m.V, m.F)[0] > 0.5 * cap_volume
+
+
+def test_huge_content_length_gets_an_answer_not_a_traceback(tmp_path):
+    req = b"POST /v1/info HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: " + b"0" * 5001 + b"1\r\n\r\n"
+    data = _raw_http(tmp_path, req)
+    assert data.startswith(b"HTTP/1.1 4")
+
+
+def test_service_split_accepts_snap(tmp_path):
+    import kkmeshcut_serve as serve
+    split = next(s for s in serve.tool_specs() if s["name"] == "split")
+    assert "snap" in split["inputSchema"]["properties"]
+
+
+def test_service_split_validates_and_forwards_snap(tmp_path):
+    import kkmeshcut_serve as serve
+    tools = serve.Tools(serve.Sandbox(tmp_path))
+    with pytest.raises(mc.MeshcutError, match="snap"):
+        serve.call_tool(tools, "split", {"input": "c.obj", "outdir": "o", "plane": ["1,0,0,0"], "snap": "abc"})

@@ -113,7 +113,7 @@ class Tools:
         src, out = self.sb.path(a.get("input"), "input"), self.sb.path(a.get("outdir"), "outdir")
         opts = {}
         for key, kind in (("plane", "strlist"), ("grid", "str"), ("max", "str"), ("wedges", "int"), ("axis", "str"), ("center", "str"),
-                          ("labels", "str"), ("format", "format"), ("no_cap", "bool"), ("flip", "bool"), ("verify", "bool")):
+                          ("labels", "str"), ("format", "format"), ("no_cap", "bool"), ("flip", "bool"), ("verify", "bool"), ("snap", "num")):
             v = _opt(a, key, kind)
             if v is not None:
                 opts[key] = self.sb.path(v, "labels") if key == "labels" else v
@@ -184,7 +184,7 @@ def tool_specs():
          "Schreibt Teile + meshcut.json in outdir; join/verify stellen das Original bitgenau wieder her.",
          "inputSchema": {"type": "object", "properties": {
              "input": S, "outdir": S, "plane": {"type": "array", "items": S}, "grid": S, "max": S, "wedges": {"type": "integer"}, "axis": S,
-             "center": S, "labels": S, "format": {"type": "string", "enum": list(mc.FORMATS)}, "no_cap": {"type": "boolean"},
+             "center": S, "snap": {"type": "number"}, "labels": S, "format": {"type": "string", "enum": list(mc.FORMATS)}, "no_cap": {"type": "boolean"},
              "flip": {"type": "boolean"}, "verify": {"type": "boolean"}}, "required": ["input", "outdir"]}},
         {"name": "segment", "description": "Teile automatisch finden (kmeans, components, command, http) und optional benennen (names oder prompt); "
          "das Ergebnis ist eine Zuordnungskarte, also exakt wieder zusammensetzbar.",
@@ -323,7 +323,7 @@ def make_handler(tools, token, timeout=30):
         def _bad_framing(self):
             """Content-Length nur als Dezimalzahl und hoechstens einmal; kein Transfer-Encoding. Sonst waere die Grenze zwischen zwei Anfragen auf einer Verbindung unklar."""
             lens = self.headers.get_all("Content-Length") or []
-            return len(lens) > 1 or any(not re.fullmatch(r"[0-9]+", x.strip()) for x in lens) or bool(self.headers.get("Transfer-Encoding"))
+            return len(lens) > 1 or any(not re.fullmatch(r"[0-9]{1,12}", x.strip()) for x in lens) or bool(self.headers.get("Transfer-Encoding"))
 
         def do_GET(self):
             if self._bad_framing() or int(self.headers.get("Content-Length", "0") or 0) > 0:      # ein GET braucht keinen Body; ungelesen bliebe er als naechste Anfrage stehen

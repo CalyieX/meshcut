@@ -325,6 +325,9 @@ MUTANTS = [
     ('r16 serve: parts 0 erlaubt', 'not 2 <= parts <= 1024', 'False', 'kkmeshcut_serve.py'),
     ('r16 edit: Material-Tippfehler ohne Hinweis', 'prim[4] and prim[4] not in {f.mat for f in sc.faces}', 'False', 'kkmeshcut_edit.py'),
     ('r16 edit: 500er-Grenze verschwiegen', 'if om else ""', 'if False else ""', 'kkmeshcut_edit.py'),
+    ('r17 edit: Kappenseite nach Randlage', 'sign = 1.0 if away > 0 else -1.0', 'sign = 1.0 if float(w[:nrim].mean()) - cw > 0 else -1.0', 'kkmeshcut_edit.py'),
+    ('r17 serve: Content-Length beliebig lang', 'r"[0-9]{1,12}"', 'r"[0-9]+"', 'kkmeshcut_serve.py'),
+    ('r17 serve: snap fehlt im Dienst', '("verify", "bool"), ("snap", "num")', '("verify", "bool")', 'kkmeshcut_serve.py'),
 ]
 
 
