@@ -41,7 +41,7 @@ MUTANTS = [
     ("wasserdicht-Pruefung vor Schnitt weg", "    er = edge_report(mesh.F, len(mesh.V))\n    if not er[\"watertight\"]:", "    er = edge_report(mesh.F, len(mesh.V))\n    if False:"),
     ("Fremddatei ueberschreiben", "if (out / n).exists() and n not in owned:", "if False:"),
     ("Rollback fehlt", "        for n in installed:\n            try:\n                (out / n).unlink(missing_ok=True)", "        for n in []:\n            try:\n                (out / n).unlink(missing_ok=True)"),
-    ("Seitenwiederherstellung fehlt", "                os.replace(f, out / names[int(f.name)])", "                pass"),
+    ('Seitenwiederherstellung fehlt', '                os.replace(f, out / allnames[int(f.name)])', '                pass'),
     ("Eingabe im Ausgabeordner erlaubt", "if rx.parent == out.resolve() and (rx.name in owned or rx.name in new_names):", "if False:"),
     ("Link erlaubt", "if out.exists() and (link_like(out) or not out.is_dir()):", "if out.exists() and (False or not out.is_dir()):"),
     ("alte Teile bleiben", "stale = sorted(n for n in owned if n not in allnames and (out / n).is_file())", "stale = []"),
@@ -61,17 +61,17 @@ MUTANTS = [
     ("API: stdout nicht umgeleitet", "with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):\n            a = build_parser(_ApiParser)", "if True:\n            a = build_parser(_ApiParser)"),
     ("Hausdorff Richtung eins", "for (Va, ua), (Vb, Fb) in (((V1, u1), (V2, F2)), ((V2, u2), (V1, F1))):", "for (Va, ua), (Vb, Fb) in (((V1, u1), (V2, F2)),):"),
     ("Join ohne Paarentfernung", "                for a, b in zip(pos_i, neg_i):\n                    drop[a] = drop[b] = True", "                pass"),
-    ("Ebene: Gewicht Default", "p.weight = 1 << k", "p.weight = 1"),
+    ('Ebene: Gewicht Default', '            p.weight = 1 << k\n        st = _cut_once', '            p.weight = 1\n        st = _cut_once'),
     ("snap-Skala", "<= snap * extent +", "<= snap * 1e-9 +"),
     ("Eckpunkt-Rotation in Fragment", "if gi * gj < 0:\n                e = emap[min(i, j) * nV + max(i, j)]", "if gi * gj < 0:\n                e = emap[min(i, j) * nV + min(i, j)] if False else emap[min(i, j) * nV + max(i, j)]"),
     ("teile-hash nicht geprueft", 'add("teile", not bad,', 'add("teile", True,'),
     ("ebenen nicht geprueft", 'add("ebenen", *_check_cap_planes(side, parts, prec))', 'add("ebenen", True, "x")'),
     ("flache Fuellstuecke nicht verknuepft", "_alias_flat_edges(V, Fc, Sc, emap, nV)\n", "pass\n"),
-    ("deckel nicht zentriert", "X = X - X.mean(axis=0)", "pass"),
+    ('deckel nicht zentriert', '    X = X - X.mean(axis=0)                  # um den Schwerpunkt', '    pass                  # um den Schwerpunkt'),
     ("Wiederherstellung in prepare fehlt", "recover_outdir(out)\n    owned = set()", "owned = set()"),
-    ("Wiederherstellung in load fehlt", "        recover_outdir(folder)\n    p = Path(folder) / SIDECAR", "        pass\n    p = Path(folder) / SIDECAR"),
+    ('Wiederherstellung in load fehlt', '        recover_outdir(folder, min_age=READ_RECOVER_AGE)\n    p = Path(folder) / SIDECAR', '        pass\n    p = Path(folder) / SIDECAR'),
     ("Journal: done wird zurueckgerollt", 'if j["state"] != "done":', 'if True:'),
-    ("Journal nicht geschrieben", '_write_journal(aside, "moving", names, moved)', 'pass'),
+    ('Journal nicht geschrieben', '_write_journal(aside, "moving", allnames, moved)', 'pass'),
     ("join-Ordnerschutz samefile", "if outp.exists() and any((inputs[0] / n).exists() and os.path.samefile(inputs[0] / n, outp) for n in guarded):", "if False:"),
     ("3MF Einheit ignoriert", "scale = THREEMF_UNITS[unit]", "scale = 1.0"),
     ("3MF Einheit unbekannt erlaubt", "if unit not in THREEMF_UNITS:", "if False:"),
@@ -83,12 +83,12 @@ MUTANTS = [
     ("Zellen-Limit fehlt", "    if cells > MAX_PARTS:", "    if False:"),
     ("Gitter komprimiert", 'mode="wedges" if a.wedges else ("grid" if (a.grid or a.max) else "plane")', 'mode="wedges" if a.wedges else "plane"'),
     ("doppelte Eckpunkte-Fragmente behalten", "if poly[0] == poly[q] or poly[q] == poly[q + 1] or poly[0] == poly[q + 1]:", "if False:"),
-    ("API info nicht gekapselt", "raise MeshcutError((str(e).strip().splitlines() or [type(e).__name__])[0]) from e\n\n\ndef labels", "raise\n\n\ndef labels"),
+    ('API info nicht gekapselt', 'raise MeshcutError((str(e).strip().splitlines() or [type(e).__name__])[0]) from e\n    return out.getvalue()', 'raise\n    return out.getvalue()'),
     ("ASCII-STL gross", "text, re.IGNORECASE)", "text)"),
     ("OBJ Einrueckung", "q = ln.split()\n        if not q:\n            continue", "q = ln.split()\n        if not q or ln[0] in ' \t':\n            continue"),
     ("Ebene als Tupel", "if len(val) == 4 and all(", "if False and all("),
     ("help erlaubt", 'if key in ("help", "h", "version"):', 'if False:'),
-    ("Pruefmeldung ohne Namen", 'fail("Pruefung fehlgeschlagen: %s." % ", ".join(c[0] for c in r["checks"] if not c[1]))', 'fail("Pruefung fehlgeschlagen.")'),
+    ('Pruefmeldung ohne Namen', '        if not r["ok"]:\n            fail("Pruefung fehlgeschlagen: %s." % ", ".join(c[0] for c in r["checks"] if not c[1]))', '        if not r["ok"]:\n            fail("Pruefung fehlgeschlagen.")'),
     ("Snap ohne Rechenungenauigkeit", "+ 8 * np.finfo(np.float64).eps * mag * (snap > 0)", "+ 0"),
     ("Hausdorff float32-Zuschlag", '+ (8 * np.finfo(np.float32).eps * mag if prec == "float32" else 0.0)', ""),
     ("Ebenen-Toleranz zu weit", "tol = (1e-9 if prec == \"float64\" else 1e-6) * extent + 16 * eps * (mag + max(abs(d) for _, d in planes))", "tol = 1e9"),
@@ -123,11 +123,11 @@ MUTANTS = [
     ("ai: Kindprogramm erbt stdin", "shell=False, stdin=subprocess.DEVNULL)", "shell=False)", "kkmeshcut_ai.py"),
     ('r2 serve: Schluessel nur Praefix', 'hmac.compare_digest(got[7:].encode(), token.encode())', 'got[7:].startswith(token[:3])', "kkmeshcut_serve.py"),
     ('r2 serve: Schluessel nur Laenge', 'hmac.compare_digest(got[7:].encode(), token.encode())', 'len(got[7:]) == len(token)', "kkmeshcut_serve.py"),
-    ('r2 serve: GET ohne Schluessel', 'def do_GET(self):\n            if not self._authorized():', 'def do_GET(self):\n            if False:', "kkmeshcut_serve.py"),
+    ('r2 serve: GET ohne Schluessel', '            if not self._authorized():\n                return self._send(401, {"error": "Schluessel fehlt oder falsch."})\n            if self.path == "/v1/health":', '            if False:\n                return self._send(401, {"error": "Schluessel fehlt oder falsch."})\n            if self.path == "/v1/health":', 'kkmeshcut_serve.py'),
     ('r2 serve: Typ bool nicht geprueft', 'if not isinstance(v, bool):', 'if False:', "kkmeshcut_serve.py"),
     ('r2 serve: Protokollversion immer neueste', 'want if want in MCP_VERSIONS else MCP_VERSIONS[0]', 'MCP_VERSIONS[0]', "kkmeshcut_serve.py"),
     ('r2 serve: Werkzeugfehler beendet Dienst', '        except Exception as e:                                   # nie den Dienst beenden', '        except KeyboardInterrupt as e:', "kkmeshcut_serve.py"),
-    ('r2 serve: LOCK weg', '    with LOCK:\n        return getattr(tools, name)(args)', '    return getattr(tools, name)(args)', "kkmeshcut_serve.py"),
+    ('r2 serve: LOCK weg', '    with LOCK:\n        return _scrub_obj(tools, getattr(tools, name)(args))', '    return _scrub_obj(tools, getattr(tools, name)(args))', 'kkmeshcut_serve.py'),
     ('r2 serve: Nullbyte erlaubt', 'or "\\0" in value:', ':', "kkmeshcut_serve.py"),
     ('r2 serve: chunked erlaubt', 'if self.headers.get("Transfer-Encoding"):', 'if False:', "kkmeshcut_serve.py"),
     ('r2 serve: verschachteltes JSON beendet Anfrage', '            except Exception:                                    # ValueError, UnicodeDecodeError, RecursionError', '            except (ValueError, UnicodeDecodeError):', "kkmeshcut_serve.py"),
@@ -204,9 +204,9 @@ MUTANTS = [
     ('r6 edit: Deckel ohne UV', 'new.append(Face([(rloop[k][1], rloop[k][2], vn) for k in (a_, b_, c_)]', 'new.append(Face([(rloop[k][1], -1, vn) for k in (a_, b_, c_)]', "kkmeshcut_edit.py"),
     ('r6 edit: Selbstpruefung aus', 'if got != want or len(back.faces) != len(sc_new.faces):', 'if False:', "kkmeshcut_edit.py"),
     ('r6 edit: Selbstpruefung vergleicht mit sich', 'got = [back.signature(f) for f in back.faces[:len(kept_ids)]]', 'got = want', "kkmeshcut_edit.py"),
-    ('r6 edit: Ersatz ohne Material des Originals', 'mat = material if material else (region["materials"][0] if region["materials"] else None)', 'mat = material', "kkmeshcut_edit.py"),
+    ('r6 edit: Ersatz ohne Material des Originals', 'mat = _typed(sc, material) if material else _raw_material(sc, region)', 'mat = _typed(sc, material) if material else None', 'kkmeshcut_edit.py'),
     ('r6 edit: mtllib mit Pfaden', 'if Path(m).name != m or m in ("", ".", ".."):', 'if False:', "kkmeshcut_edit.py"),
-    ('r6 edit: Materialname ungeprueft', 'if m is not None and (not m.strip()', 'if False and (not m.strip()', "kkmeshcut_edit.py"),
+    ('r6 edit: Materialname ungeprueft', '    if m is not None and (not m.strip(" \\t") or m != m.strip(" \\t") or len(m) > 128', '    if False and (not m.strip(" \\t") or m != m.strip(" \\t") or len(m) > 128', 'kkmeshcut_edit.py'),
     ('r6 edit: Eingabe ueberschreibbar', 'fail("Die Ausgabe darf nicht die Eingabedatei sein.")', 'pass', "kkmeshcut_edit.py"),
     ('r6 edit: Nummer True', 'if isinstance(region, bool):', 'if False:', "kkmeshcut_edit.py"),
     ('r6 edit: groesstes statt kleinstes Element', 'return min(cand, key=lambda r: (r["faces"], r["id"]))', 'return max(cand, key=lambda r: (r["faces"], r["id"]))', "kkmeshcut_edit.py"),
@@ -227,24 +227,24 @@ MUTANTS = [
     ('r6 edit: Z-Puffer', 'upd = inside & (z > win)', 'upd = inside & (z < win)', "kkmeshcut_edit.py"),
     ('r6 edit: Nummern nur sichtbar', 'visible[r["id"]] = bool(len(xs))', 'visible[r["id"]] = True', "kkmeshcut_edit.py"),
     ('r6 edit: Komponenten ohne Lage', '    _, inv = np.unique(sc.V, axis=0, return_inverse=True)', '    inv = np.arange(len(sc.V))', "kkmeshcut_edit.py"),
-    ('r6 edit: Normalen der Kugel ungeprueft', 'vn = sc.add_vn(tn / tl) if (has_n and tl > 0) else -1', 'vn = -1', "kkmeshcut_edit.py"),
+    ('r6 edit: Normalen der Kugel ungeprueft', 'vn = sc.add_vn(tn / tl) if (has_n and tl > 0) else -1\n                new.append(Face([(a_[1]', 'vn = -1\n                new.append(Face([(a_[1]', 'kkmeshcut_edit.py'),
     ('r6 edit: Mittelpunkt-Deckel ohne UV', 'cvt = sc.add_vt(arr.mean(axis=0))', 'cvt = -1', "kkmeshcut_edit.py"),
     ('r4 serve: MCP-Zeilenlaenge unbegrenzt', 'if len(line) > MAX_BODY and not line.endswith(NL):', 'if False:', "kkmeshcut_serve.py"),
     ('r4 serve: Host [::1] ohne Port', 'host = host[1:host.find("]")] if host.startswith("[") and "]" in host else', "host = ((host.rsplit(':', 1)[0].strip('[]')) if True else host) if False else", "kkmeshcut_serve.py"),
     ('r7 edit: usemtl off nicht geschrieben', 'lines.append("usemtl " + (f.mat if f.mat is not None else "off"))', 'lines.append("usemtl " + f.mat) if f.mat is not None else None', "kkmeshcut_edit.py"),
     ('r7 edit: off nicht gelesen', 'cur["mat"] = None if rest in ("", "off") else rest', 'cur["mat"] = rest or None', "kkmeshcut_edit.py"),
     ('r7 edit: Alias ohne Namen', 'if name:                                              # dieselben', 'if False:                                              # dieselben', "kkmeshcut_edit.py"),
-    ('r7 edit: Namen nie mehrdeutig', 'if len(hit) > 1:', 'if False:', "kkmeshcut_edit.py"),
+    ('r7 edit: Namen nie mehrdeutig', '        if len(hit) > 1:\n            fail("Der Name', '        if False:\n            fail("Der Name', 'kkmeshcut_edit.py'),
     ('r7 edit: Gleichstand groesste Nummer', 'key=lambda r: (-len(r["face_ids"]), -r["id"])', 'key=lambda r: (-len(r["face_ids"]), r["id"])', "kkmeshcut_edit.py"),
     ('r7 edit: Gleichstand at', 'key=lambda r: (r["faces"], r["id"]))', 'key=lambda r: (r["faces"], -r["id"]))', "kkmeshcut_edit.py"),
     ('r7 edit: scale ungeprueft', 'math.isfinite(sc) and SCALE_RANGE[0] <= sc <= SCALE_RANGE[1]', 'True', "kkmeshcut_edit.py"),
     ('r7 edit: size ungeprueft', 'SIZE_RANGE[0] <= sz <= SIZE_RANGE[1]', 'True', "kkmeshcut_edit.py"),
-    ('r7 edit: Material neuer Flaechen ungeprueft', '[f.mat for f in fresh_back] != [f.mat for f in fresh] or ', '', "kkmeshcut_edit.py"),
-    ('r7 edit: Ausgabe bleibt bei Fehler', '            Path(dst).unlink()', '            pass', "kkmeshcut_edit.py"),
-    ('r7 edit: Woelbung nie gefuellt', 'if abs(float(h(0.0, 0.0)) - float(hb.mean())) < CURVED_MIN * diam:', 'if True:', "kkmeshcut_edit.py"),
-    ('r7 edit: Woelbung immer gefuellt', 'if abs(float(h(0.0, 0.0)) - float(hb.mean())) < CURVED_MIN * diam:', 'if False:', "kkmeshcut_edit.py"),
+    ('r7 edit: Material neuer Flaechen ungeprueft', '[back.raw_name(f.mat) for f in fresh_back] != [sc_new.raw_name(f.mat) for f in fresh] or ', '', 'kkmeshcut_edit.py'),
+    ('r7 edit: Ausgabe bleibt bei Fehler', '            stage.unlink()', '            pass', 'kkmeshcut_edit.py'),
+    ('r7 edit: Woelbung nie gefuellt', '    if rise < CURVED_MIN * diam or rise > CURVED_MAX_RISE * diam:', '    if True:', 'kkmeshcut_edit.py'),
+    ('r7 edit: Woelbung immer gefuellt', '    if rise < CURVED_MIN * diam or rise > CURVED_MAX_RISE * diam:', '    if False:', 'kkmeshcut_edit.py'),
     ('r7 edit: Paraboloid-Guete ungeprueft', 'if float(np.sqrt(np.mean((A @ coef - w) ** 2))) > CURVED_FIT:', 'if False:', "kkmeshcut_edit.py"),
-    ('r7 edit: Stern-Test weg', 'star = bool(len(Pr) >= 6 and np.all(np.diff(ang) > 0) and float(ang[-1] - ang[0]) < 2 * math.pi)', 'star = True', "kkmeshcut_edit.py"),
+    ('r7 edit: Stern-Test weg', 'star = bool(len(Pr) >= 6 and np.all(np.diff(ang) > -STAR_TOL) and float(ang[-1] - ang[0]) < 2 * math.pi + STAR_TOL)', 'star = True', 'kkmeshcut_edit.py'),
     ('r7 edit: Hoehe der Mitte', 'cpos = cen + float(cv["h"](0.0, 0.0)) * n', 'cpos = cen', "kkmeshcut_edit.py"),
     ('r7 edit: Ringe ohne Hoehe', 'pos = cen + a * cv["u"] + b * cv["v"] + float(cv["h"](a, b)) * n', 'pos = cen + a * cv["u"] + b * cv["v"]', "kkmeshcut_edit.py"),
     ('r7 edit: Ring-Windung', 'tri(rings[r][k], rings[r][k2], rings[r + 1][k2])', 'tri(rings[r][k2], rings[r][k], rings[r + 1][k2])', "kkmeshcut_edit.py"),
@@ -292,7 +292,7 @@ MUTANTS = [
     ('r11 edit: Texte nicht zurueckverwandelt', 'out.append(m.group(1).encode("utf-8") if m.group(1) else bytes([ord(m.group(2)) - ESCAPE_BASE]))', 'out.append(b"?")', "kkmeshcut_edit.py"),
     ('r12 edit: Escape immer', '    if not escaped:\n        return text.encode("utf-8")', '    if False:\n        return text.encode("utf-8")', "kkmeshcut_edit.py"),
     ('r12 edit: Markierung fehlt', 'ESCAPE_MARK + m.group(0)', 'm.group(0)', "kkmeshcut_edit.py"),
-    ('r12 edit: splitlines im Kopf', 'for ln in _LINE_BREAK.split(text):', 'for ln in text.splitlines():', "kkmeshcut_edit.py"),
+    ('r12 edit: splitlines im Kopf', '    for ln in _LINE_BREAK.split(text):\n        q = ln.split()', '    for ln in text.splitlines():\n        q = ln.split()', 'kkmeshcut_edit.py'),
     ('r12 edit: Zielmeldung ohne Namen', 'fail("%s ist schreibgeschuetzt oder in Benutzung." % dst)', 'fail("Die Datei ist schreibgeschuetzt oder in Benutzung.")', "kkmeshcut_edit.py"),
     ('r12 edit: mtllib roh', 'entry = _plain(entry) if src_scene.escaped else entry', 'entry = entry', "kkmeshcut_edit.py"),
     ('r12 edit: Anzeige roh', 'shown = _plain if sc.escaped else str', 'shown = str', "kkmeshcut_edit.py"),
@@ -302,7 +302,7 @@ MUTANTS = [
     ('r13 edit: Anzeigematerial uebernommen', 'else _raw_material(sc, region)', 'else (region["materials"][0] if region["materials"] else None)', "kkmeshcut_edit.py"),
     ('r13 edit: Materialien roh angezeigt', '[_plain(m) if sc.escaped else m for m, _ in sorted', '[m for m, _ in sorted', "kkmeshcut_edit.py"),
     ('r13 edit: Textur roh', 'name = _plain(tok[-1]) if escaped else tok[-1]', 'name = tok[-1]', "kkmeshcut_edit.py"),
-    ('r13 edit: Material mit Randleerzeichen', 'm != m.strip() or ', '', "kkmeshcut_edit.py"),
+    ('r13 edit: Material mit Randleerzeichen', ' or m != m.strip(" \\t") or len(m) > 128', ' or len(m) > 128', 'kkmeshcut_edit.py'),
     ('r13 edit: Name mit strip()', 'rest = ln.strip(" \\t")[len(tag):].strip(" \\t")', 'rest = ln.strip()[len(tag):].strip()', "kkmeshcut_edit.py"),
     ('r14 edit: Kuppelhoehe unbegrenzt', 'rise < CURVED_MIN * diam or rise > CURVED_MAX_RISE * diam', 'rise < CURVED_MIN * diam', 'kkmeshcut_edit.py'),
     ('r14 edit: Pruefer mit Massstab', 'ranking = rank_shapes(sc, region, 1.0, axis)', 'ranking = rank_shapes(sc, region, scale, axis)', 'kkmeshcut_edit.py'),
@@ -318,7 +318,7 @@ MUTANTS = [
     ('r15 edit: Beruehrungsecke nicht getrennt', '            if nv in at:', '            if nv == e0[0]:', 'kkmeshcut_edit.py'),
     ('r15 edit: Schreibweise zaehlt nicht', 'hit = exact if len(exact) == 1 else hit', 'hit = hit', 'kkmeshcut_edit.py'),
     ('r16 serve: GET mit Body angenommen', 'if self._bad_framing() or int(self.headers.get("Content-Length", "0") or 0) > 0:', 'if False:', 'kkmeshcut_serve.py'),
-    ('r16 serve: Content-Length lax', 'r"[0-9]+"', 'r".+"', 'kkmeshcut_serve.py'),
+    ('r16 serve: Content-Length lax', 'r"[0-9]{1,12}"', 'r".+"', 'kkmeshcut_serve.py'),
     ('r16 serve: doppelte Content-Length', 'len(lens) > 1 or ', '', 'kkmeshcut_serve.py'),
     ('r16 serve: unbekannte Argumente still', '    if unknown:', '    if False:', 'kkmeshcut_serve.py'),
     ('r16 serve: NaN im JSON', 'if isinstance(obj, float) and not math.isfinite(obj):', 'if False:', 'kkmeshcut_serve.py'),
@@ -370,7 +370,7 @@ def run(mutant):
         (work / target).write_text(mutated, encoding="utf-8")
         shutil.copy(work / "kkmeshcut.py", work / "docs" / "kkmeshcut.py")
         (work / "docs" / "index.html").write_text((REPO / "docs" / "index.html").read_text(encoding="utf-8"), encoding="utf-8")
-        r = subprocess.run([PY, "-m", "pytest", "-x", "-q", "-p", "no:cacheprovider", "--tb=line", *(["tests/test_edit.py", "tests/test_bench.py"] if target == "kkmeshcut_edit.py" else ["tests"])], cwd=work, capture_output=True, text=True, timeout=1500, creationflags=NO_WINDOW, stdin=subprocess.DEVNULL)
+        r = subprocess.run([PY, "-m", "pytest", "-x", "-q", "-p", "no:cacheprovider", "--tb=line", *(["tests/test_edit.py", "tests/test_bench.py", "tests/test_review.py"] if target == "kkmeshcut_edit.py" else ["tests"])], cwd=work, capture_output=True, text=True, timeout=1500, creationflags=NO_WINDOW, stdin=subprocess.DEVNULL)
         lines = r.stdout.splitlines()
         tail = [ln for ln in lines if ln.startswith("FAILED") or ln.startswith("ERROR")][:1]
         why = [ln for ln in lines if ln.startswith(("/", "E:", "C:", "D:")) and ": " in ln][:1]            # Zeile aus --tb=line
@@ -387,6 +387,13 @@ def run(mutant):
 
 if __name__ == "__main__":
     only = sys.argv[1:]
+    broken = []                                                   # ein Muster, das es im Quelltext nicht genau einmal gibt, wuerde still nichts pruefen: das ist ein Fehler, kein Ergebnis
+    for m_ in MUTANTS:
+        n_ = (REPO / (m_[3] if len(m_) > 3 else "kkmeshcut.py")).read_text(encoding="utf-8").count(m_[1])
+        if n_ != 1:
+            broken.append("%s (%d Treffer)" % (m_[0], n_))
+    if broken:
+        sys.exit("Muster nicht genau einmal im Quelltext: " + "; ".join(broken))
     todo = [m for m in MUTANTS if not only or any(o in m[0] for o in only)]
     results = []
     with cf.ThreadPoolExecutor(max_workers=5) as ex:
@@ -397,3 +404,4 @@ if __name__ == "__main__":
     print("\n%d Mutanten, %d getoetet, %d ueberlebt/ungueltig" % (len(todo), len(todo) - len(alive), len(alive)))
     for t in alive:
         print("  ->", t[0])
+    sys.exit(1 if alive else 0)
