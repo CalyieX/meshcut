@@ -677,12 +677,21 @@ def test_http_get_needs_the_key_too(api, path):
 
 def test_http_refuses_chunked_and_survives_deeply_nested_json(api):
     port, _ = api
-    c = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
-    try:
-        c.request("POST", "/v1/info", body=iter([b"{}"]), headers={"Authorization": "Bearer tok", "Content-Type": "application/json"}, encode_chunked=True)
-    except (BrokenPipeError, ConnectionResetError):               # der Dienst antwortet und schliesst, noch bevor der Client alle Teile geschickt hat; die Antwort liegt trotzdem bereit
-        pass
-    assert c.getresponse().status == 411
+    status = None
+    for _ in range(3):                                            # der Dienst antwortet und schliesst, bevor der Client fertig gesendet hat; unter Last kann die Verbindung dabei zurueckgesetzt werden
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+        try:
+            try:
+                c.request("POST", "/v1/info", body=iter([b"{}"]), headers={"Authorization": "Bearer tok", "Content-Type": "application/json"}, encode_chunked=True)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            status = c.getresponse().status
+            break
+        except (ConnectionResetError, ConnectionAbortedError, http.client.RemoteDisconnected):
+            continue
+        finally:
+            c.close()
+    assert status == 411
     deep = b"[" * 200000 + b"]" * 200000
     assert post(port, "/v1/info", deep)[0] == 400
     assert post(port, "/v1/info", {"path": "x"})[0] == 400                                    # der Dienst lebt weiter

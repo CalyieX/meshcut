@@ -98,7 +98,7 @@ def _opt(args, key, kind):
 def _summary(side):
     return {"parts": [{"id": p["id"], "file": p["file"], "faces": p["faces"], "cap_faces": p["cap_faces"]} for p in side["parts"]],
             "names": side.get("names"), "format": side["format"], "mode": side["mode"], "source_hash": side["source"]["hash"],
-            "precision": side["source"]["precision"]}
+            "precision": side["source"]["precision"], "warnings": list(side.get("warnings", []))}
 
 
 class Tools:

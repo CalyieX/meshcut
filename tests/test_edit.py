@@ -2142,3 +2142,43 @@ def test_coarse_float32_grid_far_from_the_origin_gets_a_note(tmp_path, capsys):
     mc.main(["split", str(src), str(tmp_path / "o2"), "--plane", "y=5"])
     out = capsys.readouterr()
     assert "nur auf etwa" not in out.out + out.err
+
+
+# ============================================================================= Spock R26
+def _rotated_far_cube(tmp_path, offset=1e5):
+    m = shapes.cube(2.0, lo=(0, 0, 0), sub=2)
+    th = 0.3
+    R = np.array([[np.cos(th), -np.sin(th), 0], [np.sin(th), np.cos(th), 0], [0, 0, 1]])
+    src = tmp_path / "h.stl"
+    src.write_bytes(mc.mesh_bytes("stl", m.V @ R.T + offset, m.F, "h"))
+    return src
+
+
+def test_split_api_returns_the_notes_as_a_list(tmp_path):
+    """Spock R26: der Rasterhinweis ging in der Python-API verloren."""
+    src = _rotated_far_cube(tmp_path)
+    side = mc.split(src, tmp_path / "o", plane=["1,0,0,100000.0001"])
+    assert any("nur auf etwa" in w for w in side["warnings"])
+    assert "warnings" not in json.loads((tmp_path / "o" / "meshcut.json").read_text(encoding="utf-8"))   # die Begleitdatei bleibt unveraendert
+
+
+def test_split_api_has_an_empty_warning_list_near_the_origin(tmp_path):
+    m = shapes.cube(2.0, lo=(0, 0, 0), sub=2)
+    src = tmp_path / "c.stl"
+    src.write_bytes(mc.mesh_bytes("stl", m.V, m.F, "c"))
+    assert mc.split(src, tmp_path / "o", plane=["x=1"])["warnings"] == []
+
+
+def test_service_summary_carries_the_warnings(tmp_path):
+    import kkmeshcut_serve as serve
+    src = _rotated_far_cube(tmp_path)
+    tools = serve.Tools(serve.Sandbox(tmp_path))
+    got = serve.call_tool(tools, "split", {"input": "h.stl", "outdir": "o", "plane": ["1,0,0,100000.0001"]})
+    assert any("nur auf etwa" in w for w in got["warnings"])
+
+
+def test_verify_tolerates_the_float32_step_of_a_far_source(tmp_path):
+    """Spock R26: bei Offset 1e5 schlugen volumen/flaeche an, obwohl nur die 32-Bit-Schritte der Quelle grob waren."""
+    src = _rotated_far_cube(tmp_path)
+    mc.split(src, tmp_path / "o", plane=["1,0,0,100000.0001"])
+    assert mc.verify_folder(tmp_path / "o", source=src)["ok"]

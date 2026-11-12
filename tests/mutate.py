@@ -354,6 +354,9 @@ MUTANTS = [
     ('r28 core: float32-Verlust nur Hinweis', 'fail("Mit 32-Bit-Zahlen (%s) waeren die Teile nicht wasserdicht', 'say("Mit 32-Bit-Zahlen (%s) waeren die Teile nicht wasserdicht', 'kkmeshcut.py'),
     ('r28 core: Rasterhinweis nie', 'if ext32 > 0 and step32 / ext32 > 1e-4:', 'if False:', 'kkmeshcut.py'),
     ('r28 core: Rasterhinweis immer', 'if ext32 > 0 and step32 / ext32 > 1e-4:', 'if True:', 'kkmeshcut.py'),
+    ('r29 core: verify ohne float32-Korn', 'rel_v, rel_a = max(rel_v, grain), max(rel_a, grain)', 'pass', 'kkmeshcut.py'),
+    ('r29 core: API ohne warnings', 'side["warnings"] = [ln[len("Hinweis: "):] for ln in text.splitlines() if ln.startswith("Hinweis: ")]', 'side["warnings"] = []', 'kkmeshcut.py'),
+    ('r29 serve: Zusammenfassung ohne warnings', ', "warnings": list(side.get("warnings", []))}', '}', 'kkmeshcut_serve.py'),
     ('r21 edit: Volumen falsch gerechnet', 'float(np.einsum("ij,ij->", V[tri[:, 0]], np.cross(V[tri[:, 1]], V[tri[:, 2]]))) / 6.0', 'float(np.einsum("ij,ij->", V[tri[:, 0]], np.cross(V[tri[:, 1]], V[tri[:, 2]]))) / 3.0', 'kkmeshcut_edit.py'),
 ]
 

@@ -2158,6 +2158,12 @@ def verify_folder(folder, source=None):
     def add(name, ok, text):
         checks.append((name, bool(ok), text))
     rel_v, rel_a = tolerances(prec)
+    if prec == "float32" and parts:                                        # grobe 32-Bit-Schritte (Netz weit vom Ursprung) verschieben Volumen und Flaeche um den Rundungsfehler der Koordinaten selbst
+        allv0 = np.concatenate([V for _, V, _ in parts])
+        ext0 = float((allv0.max(axis=0) - allv0.min(axis=0)).max()) if len(allv0) else 0.0
+        if ext0 > 0:
+            grain = 8 * float(np.finfo(np.float32).eps) * float(np.abs(allv0).max()) / ext0
+            rel_v, rel_a = max(rel_v, grain), max(rel_a, grain)
     # 0. die Teile selbst: jede Datei muss genau das enthalten, was split geschrieben hat (Fragmente und Deckel eingeschlossen)
     bad = []
     for meta, (pid, V, F) in zip(side["parts"], parts):
@@ -2347,7 +2353,7 @@ def cmd_split(a):
             ext32 = float((hi - lo).max())
             step32 = float(np.finfo(np.float32).eps) * float(np.abs(mesh.V).max())
             if ext32 > 0 and step32 / ext32 > 1e-4:
-                say("Hinweis: Die Zahlen in %s sind hier nur auf etwa %.3g genau (Entfernung vom Ursprung); Schnittflaechen und Summen weichen darum messbar ab (verify zeigt es). Zum Ursprung verschieben oder --format obj/ply/3mf nehmen." % (a.format, step32))
+                say("Hinweis: Die Zahlen in %s sind hier nur auf etwa %.3g genau (Entfernung vom Ursprung); Schnittflaechen und Summen weichen darum messbar ab (verify toleriert das bis zu dieser Genauigkeit). Zum Ursprung verschieben oder --format obj/ply/3mf nehmen." % (a.format, step32))
         for p in res.parts:
             er = edge_report(p.F, len(p.V))
             if cap and not er["watertight"]:
@@ -2656,10 +2662,12 @@ def _run(cmd, positional, opts):
 
 def split(input, outdir, **options):
     """Netz zerlegen (Optionen wie auf der Kommandozeile: plane, grid, max, wedges, axis, center, labels, format, no_cap, flip,
-    verify). Rueckgabe: Inhalt von meshcut.json als dict."""
-    _run("split", [input, outdir], options)
+    verify). Rueckgabe: Inhalt von meshcut.json als dict, dazu `warnings` (Liste der Hinweise, die split ausgibt)."""
+    text = _run("split", [input, outdir], options)
     try:
-        return json.loads((Path(outdir) / SIDECAR).read_text(encoding="utf-8"))
+        side = json.loads((Path(outdir) / SIDECAR).read_text(encoding="utf-8"))
+        side["warnings"] = [ln[len("Hinweis: "):] for ln in text.splitlines() if ln.startswith("Hinweis: ")]   # nur in der Rueckgabe, nicht in der Datei
+        return side
     except (OSError, ValueError) as e:
         raise MeshcutError("%s liess sich nach dem Schreiben nicht lesen (%s)" % (SIDECAR, e)) from e
 
