@@ -2108,3 +2108,25 @@ def test_far_from_the_origin_a_float32_split_is_refused_not_written_broken(tmp_p
         assert "schneiden das Netz nicht" in str(e)                        # schon split verweigert; nicht erst --verify nach dem Schreiben
     else:
         pytest.fail("haette verweigert oder wasserdicht geschrieben werden muessen")
+
+
+def test_explicit_snap_does_not_switch_off_the_float32_check(tmp_path):
+    """Spock R25: mit eigenem --snap blieb der Verlust beim Runden auf float32 unbemerkt (Exit 0, nicht wasserdichte Teile)."""
+    m = shapes.cube(10.0, lo=(0, 0, 0), sub=2)
+    src = tmp_path / "c.stl"
+    src.write_bytes(mc.mesh_bytes("stl", m.V + 1e4, m.F, "c"))
+    with pytest.raises(SystemExit, match="32-Bit-Zahlen"):
+        mc.main(["split", str(src), str(tmp_path / "o"), "--plane", "y=10009.99970703125", "--snap=0"])
+
+
+def test_coarse_float32_grid_far_from_the_origin_gets_a_note(tmp_path, capsys):
+    m = shapes.cube(10.0, lo=(0, 0, 0), sub=2)
+    src = tmp_path / "c.stl"
+    src.write_bytes(mc.mesh_bytes("stl", m.V + 1e4, m.F, "c"))
+    mc.main(["split", str(src), str(tmp_path / "o"), "--plane", "y=10005"])
+    first = capsys.readouterr()
+    assert "nur auf etwa" in first.out + first.err
+    src.write_bytes(mc.mesh_bytes("stl", m.V, m.F, "c"))
+    mc.main(["split", str(src), str(tmp_path / "o2"), "--plane", "y=5"])
+    out = capsys.readouterr()
+    assert "nur auf etwa" not in out.out + out.err

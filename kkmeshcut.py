@@ -2332,16 +2332,22 @@ def cmd_split(a):
             fail("--snap: Zahl zwischen 0 und 0.001 noetig.")
         mode = "wedges" if a.wedges else ("grid" if (a.grid or a.max) else "plane")
         res = split_planes(mesh, planes, cap=cap, table=table, mode=mode, snap=a.snap)
-        if cap and a.format in FLOAT32_FORMATS and a.snap == SNAP_DEFAULT and _lost_in_float32(res):
+        if cap and a.format in FLOAT32_FORMATS and _lost_in_float32(res):
             # Eine Ebene, die kaum neben einem Eckpunkt liegt, gibt im Teil Eckpunkte, die in float32 mit dem Nachbarn zusammenfallen: die Datei waere nicht wasserdicht.
-            # Dann zaehlen Eckpunkte innerhalb von 4 float32-Schritten als auf der Ebene (das verschiebt nichts, siehe --snap). Ein Netz weit vom Ursprung hat groebere Schritte:
-            # die Schwelle waechst mit dem Verhaeltnis Entfernung/Groesse.
-            ext = float((hi - lo).max())
-            mag = float(np.abs(mesh.V).max())
-            fsnap = min(FLOAT32_SNAP * max(1.0, mag / ext if ext > 0 else 1.0), 1e-2)
-            res = split_planes(mesh, planes, cap=cap, table=table, mode=mode, snap=fsnap)
+            # Mit dem Standard-Snap zaehlen dann Eckpunkte innerhalb von 4 float32-Schritten als auf der Ebene (das verschiebt nichts, siehe --snap). Ein Netz weit vom Ursprung hat
+            # groebere Schritte: die Schwelle waechst mit dem Verhaeltnis Entfernung/Groesse. Bleibt der Verlust (auch bei eigenem --snap), wird nichts Kaputtes geschrieben.
+            if a.snap == SNAP_DEFAULT:
+                ext = float((hi - lo).max())
+                mag = float(np.abs(mesh.V).max())
+                fsnap = min(FLOAT32_SNAP * max(1.0, mag / ext if ext > 0 else 1.0), 1e-2)
+                res = split_planes(mesh, planes, cap=cap, table=table, mode=mode, snap=fsnap)
             if _lost_in_float32(res):
-                say("Hinweis: Mit 32-Bit-Zahlen (%s) sind die Teile nicht wasserdicht - das Netz liegt weit vom Ursprung oder die Ebene fast auf einer Eckpunktebene. Zum Ursprung verschieben oder --format obj/ply/3mf nehmen." % a.format)
+                fail("Mit 32-Bit-Zahlen (%s) waeren die Teile nicht wasserdicht - das Netz liegt weit vom Ursprung oder die Ebene fast auf einer Eckpunktebene. Zum Ursprung verschieben oder --format obj/ply/3mf nehmen." % a.format)
+        if a.format in FLOAT32_FORMATS and len(mesh.V):
+            ext32 = float((hi - lo).max())
+            step32 = float(np.finfo(np.float32).eps) * float(np.abs(mesh.V).max())
+            if ext32 > 0 and step32 / ext32 > 1e-4:
+                say("Hinweis: Die Zahlen in %s sind hier nur auf etwa %.3g genau (Entfernung vom Ursprung); Schnittflaechen und Summen weichen darum messbar ab (verify zeigt es). Zum Ursprung verschieben oder --format obj/ply/3mf nehmen." % (a.format, step32))
         for p in res.parts:
             er = edge_report(p.F, len(p.V))
             if cap and not er["watertight"]:
