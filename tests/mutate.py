@@ -310,6 +310,13 @@ MUTANTS = [
     ('r14 edit: Name mit strip()', 'want = str(name).strip(" \\t").lower()', 'want = str(name).strip().lower()', 'kkmeshcut_edit.py'),
     ('r14 serve: Wurzel in Meldungen', 'text = text.replace(form, "" if form.endswith(("/", os.sep)) else ".")', 'text = text', 'kkmeshcut_serve.py'),
     ('r14 kern: CSV mit BOM', 'read_text(encoding="utf-8-sig").strip()) if x]', 'read_text(encoding="utf-8").strip()) if x]', 'kkmeshcut.py'),
+    ('r15 serve: Verbindung bleibt offen', '            if code >= 400:\n                self.close_connection = True                       # der Body einer abgelehnten Anfrage wurde nicht gelesen: sonst wird er als naechste Anfrage geparst (Request-Smuggling)\n            self.send_response(code)\n            if code >= 400:\n                self.send_header("Connection", "close")', '            pass', 'kkmeshcut_serve.py'),
+    ('r15 serve: Erfolgsantwort mit Wurzel', 'return _scrub_obj(tools, getattr(tools, name)(args))', 'return getattr(tools, name)(args)', 'kkmeshcut_serve.py'),
+    ('r15 serve: Surrogat bricht Antwort', 'encode("utf-8", "replace")', 'encode("utf-8")', 'kkmeshcut_serve.py'),
+    ('r15 edit: keine Kugelfuellung', '    if sph is not None:', '    if False:', 'kkmeshcut_edit.py'),
+    ('r15 edit: verwundener Rand als Kappe', 'np.ptp(w[:nrim])) > CURVED_RIM_FLAT', 'np.ptp(w[:nrim])) > 1e9', 'kkmeshcut_edit.py'),
+    ('r15 edit: Beruehrungsecke nicht getrennt', '            if nv in at:', '            if nv == e0[0]:', 'kkmeshcut_edit.py'),
+    ('r15 edit: Schreibweise zaehlt nicht', 'hit = exact if len(exact) == 1 else hit', 'hit = hit', 'kkmeshcut_edit.py'),
 ]
 
 

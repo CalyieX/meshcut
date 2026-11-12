@@ -1623,9 +1623,9 @@ def test_big_cap_hole_never_gets_a_spike(tmp_path, zc):
     assert np.linalg.norm(V, axis=1).max() < 1.1 and V[:, 2].min() > -1.1
 
 
-def test_curved_fill_refuses_a_rise_above_a_third_of_the_diameter():
+def test_curved_fill_refuses_a_rise_above_the_limit():
     ang = np.linspace(0, 2 * math.pi, 12, endpoint=False)
-    for k, expect in ((0.3, True), (3.0, False)):
+    for k, expect in ((0.2, True), (3.0, False)):
         f = lambda x, y, k=k: k * (x * x + y * y)
         Pr = np.array([[math.cos(a), math.sin(a), f(math.cos(a), math.sin(a))] for a in ang])
         sc = ed.Scene()
@@ -1671,3 +1671,102 @@ def test_label_csv_with_a_byte_order_mark_is_read(tmp_path):
     p = tmp_path / "l.csv"
     p.write_bytes(b"\xef\xbb\xbf0,1,0\n")
     assert list(mc.read_label_file(p)) == [0, 1, 0]
+
+
+# ============================================================================= Spock R13
+def _open_edges(path):
+    F = mc.load_mesh(path).F
+    cnt = {}
+    for f in F:
+        for k in range(3):
+            e = tuple(sorted((int(f[k]), int(f[(k + 1) % 3]))))
+            cnt[e] = cnt.get(e, 0) + 1
+    return sum(1 for c in cnt.values() if c == 1)
+
+
+@pytest.mark.parametrize("zc", [0.7, 0.3, 0.0])
+def test_sphere_cap_hole_is_filled_on_the_sphere(tmp_path, zc):
+    """Spock R13: ein Paraboloid ueberschoss Kugelkappen um bis zu 18 Prozent; die Fuellung folgt jetzt der Kugel."""
+    p = _sphere_obj_with_cap(tmp_path, zc)
+    out = tmp_path / "o.obj"
+    mc.remove(p, name="red", out=out)
+    V = mc.load_mesh(out).V
+    assert np.linalg.norm(V, axis=1).max() < 1.01 and V[:, 2].max() > 0.98          # und nicht flach: die Mitte erreicht den Pol
+
+
+@pytest.mark.parametrize("hole", [((2, 2), (3, 3)), ((3, 2), (2, 3)), ((1, 1), (2, 2), (3, 3)), ((2, 3), (3, 2), (4, 1))])
+def test_hole_loops_split_at_a_touching_corner(tmp_path, hole):
+    """Spock R13: zwei Loecher, die sich in einer Ecke beruehren, wurden als ein verschlungener Rand verfolgt und die Fuellung scheiterte."""
+    p = tmp_path / "g.obj"
+    p.write_text(_grid_obj(n=6, hole=hole))
+    out = tmp_path / "o.obj"
+    before = _open_edges(p)
+    mc.remove(p, name="hole", out=out)
+    assert _open_edges(out) == before
+
+
+def test_exact_case_wins_between_names_that_differ_only_in_case(tmp_path):
+    p = scene_obj(tmp_path)
+    p.write_bytes(p.read_bytes().replace(b"usemtl red", b"usemtl Skin").replace(b"usemtl blue", b"usemtl skin"))
+    out = tmp_path / "o.obj"
+    mc.remove(p, name="Skin", out=out)
+    assert b"usemtl Skin" not in out.read_bytes() and b"usemtl skin" in out.read_bytes()
+
+
+def test_rejected_http_request_does_not_leave_its_body_as_a_second_request(tmp_path):
+    """Spock R13: eine abgelehnte Anfrage las ihren Body nicht und liess die Verbindung offen; der Body wurde als naechste Anfrage ausgefuehrt."""
+    import socket
+    import threading
+    import kkmeshcut_serve as serve
+    srv = serve.make_http_server(serve.Tools(serve.Sandbox(tmp_path)), 0)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        port = srv.server_address[1]
+        inner = ("GET /v1/health HTTP/1.1\r\nHost: localhost\r\n\r\n").encode()
+        outer = ("POST /v1/info HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n" % len(inner)).encode() + inner
+        s = socket.create_connection(("127.0.0.1", port), timeout=5)
+        s.sendall(outer)
+        data = b""
+        while True:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        s.close()
+        assert data.count(b"HTTP/1.1") == 1 and b"415" in data.split(b"\r\n")[0]
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_service_success_reports_do_not_show_the_root_folder(tmp_path):
+    import kkmeshcut_serve as serve
+    tools = serve.Tools(serve.Sandbox(tmp_path))
+    root = str(tmp_path.resolve())
+    got = serve._scrub_obj(tools, {"report": "Geschrieben: " + root + os.sep + "o.obj", "n": 3, "l": ["x " + root]})
+    assert root not in got["report"] and root not in got["l"][0] and got["n"] == 3
+    dbl = root.replace(os.sep, os.sep * 2)
+    assert dbl not in serve._scrub(tools, "OSError: " + dbl + os.sep * 2 + "a")
+
+
+def test_service_calls_scrub_the_root_from_successful_answers(tmp_path):
+    import kkmeshcut_serve as serve
+    tools = serve.Tools(serve.Sandbox(tmp_path))
+    root = str(tmp_path.resolve())
+    tools.info = lambda a: {"report": "Geschrieben: " + root + os.sep + "o.obj"}
+    assert root not in serve.call_tool(tools, "info", {})["report"]
+
+
+def test_http_survives_a_lone_surrogate_in_the_answer(tmp_path):
+    import threading
+    import kkmeshcut_serve as serve
+    srv = serve.make_http_server(serve.Tools(serve.Sandbox(tmp_path)), 0)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        import http.client
+        c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=5)
+        c.request("POST", "/v1/info", body=b'{"path": "a\\ud800b"}', headers={"Content-Type": "application/json"})
+        assert c.getresponse().status in (400, 404, 500)
+    finally:
+        srv.shutdown()
+        srv.server_close()

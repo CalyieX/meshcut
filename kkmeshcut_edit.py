@@ -30,7 +30,9 @@ MAX_LABELS = 60                                                  # so viele Numm
 MAX_RENDER_TRIANGLES = 40_000
 SCALE_RANGE = (0.01, 100.0)                                      # --scale: darunter/darueber entstuende ein unbrauchbarer Ersatz
 SIZE_RANGE = (64, 4096)                                          # --size des Uebersichtsbildes in Pixeln                                    # mehr Dreiecke werden fuers Bild gleichmaessig ausgeduennt
-CURVED_MAX_RISE = 0.3                                            # Mitte des Paraboloids hoechstens so weit (Anteil des Durchmessers) ueber dem Rand: sonst ragt eine Spitze ins Leere, und flach ist besser
+CURVED_SPHERE_MAX_RISE = 0.37                                    # Anteil der Diagonale des Randes: eine Halbkugel hat die Hoehe R bei einer Diagonale von rund 2,83 R (0.354), dazu Spielraum fuer den gezackten Rand
+CURVED_RIM_FLAT = 0.1                                            # der Rand einer Kappe schwankt hoechstens so stark (Anteil des Durchmessers) um seine Ebene; ein Dreiecksnetz zackt ihn
+CURVED_MAX_RISE = 0.15                                            # Mitte des Paraboloids hoechstens so weit (Anteil des Durchmessers) ueber dem Rand: sonst ragt eine Spitze ins Leere, und flach ist besser
 CURVED_MIN = 0.01                                                # Loch folgt der Wölbung, wenn die Mitte mehr als dieser Anteil des Durchmessers von der Randebene abweicht
 CURVED_FIT = 0.02                                                # ... und der Paraboloid die Umgebung mit höchstens diesem Fehler (Anteil des Durchmessers) trifft
 UV_FIT = 0.1                                                     # UV der gewoelbten Fuellung aus der Lage, wenn der Randfit hoechstens diesen Anteil der UV-Spanne danebenliegt
@@ -621,6 +623,9 @@ def choose_region(sc, regions, region=None, at=None, name=None):
             for r in regions:
                 names += [r["name"]] + [a["name"] for a in r["also"]]
             fail("Kein Element heisst '%s' - vorhanden: %s" % (str(name)[:40], ", ".join(names[:15])))
+        if len(hit) > 1:                                          # Namen, die sich nur in der Gross-/Kleinschreibung unterscheiden: die genaue Schreibweise gewinnt
+            exact = [r for r in hit if r["name"] == str(name).strip(" 	") or any(a["name"] == str(name).strip(" 	") for a in r["also"])]
+            hit = exact if len(exact) == 1 else hit
         if len(hit) > 1:
             fail("Der Name '%s' passt auf mehrere Elemente (%s) - mit --region NUMMER waehlen." % (str(name)[:40], ", ".join(str(r["id"]) for r in hit[:8])))
         return hit[0]
@@ -664,21 +669,55 @@ def _hole_loops(sc, pid, removed):
     for e0 in edges:
         if (e0[2], e0[3]) in used:
             continue
-        loop, e, ok = [], e0, False
+        loop, at, e = [], {}, e0                                  # at: Startecke -> Stelle im Weg (ein Weg, der eine Ecke wieder trifft, schliesst dort eine Schleife)
         while True:
             used.add((e[2], e[3]))
             c = sc.faces[e[2]].c[e[3]]
+            at[e[0]] = len(loop)
             loop.append((e[0], c[0], c[1], c[2], e[2]))
-            if e[1] == e0[0]:
-                ok = True
-                break
-            cands = [x for x in nxt.get(e[1], []) if (x[2], x[3]) not in used]
+            nv = e[1]
+            if nv in at:                                          # Schleife geschlossen (bei einer Beruehrungsecke zweier Loecher: das innere Loch fuer sich)
+                k = at[nv]
+                if len(loop) - k >= 3:
+                    loops.append(loop[k:])
+                for x in loop[k:]:
+                    at.pop(x[0], None)
+                loop = loop[:k]
+                if not loop:
+                    break
+            cands = [x for x in nxt.get(nv, []) if (x[2], x[3]) not in used]
             if not cands:
                 break
             e = cands[0]
-        if ok and len(loop) >= 3:
-            loops.append(loop)
     return loops
+
+
+def _sphere_height(a, b, w, nrim, diam):
+    """Kugel durch Rand und ersten Nachbarring (kleinste Quadrate): die Fuellung folgt einer Kappe genau, wo ein Paraboloid sie ueberschiesst.
+    a, b, w: Lage der Punkte in Durchmessern (in der Randebene und darueber); die ersten nrim Punkte sind der Rand.
+    Rueckgabe: Funktion h(a, b) in Originaleinheiten oder None, wenn die Punkte keiner Kugel folgen. Laengen sind Anteile der Diagonale des Randes (bei einem Kreis rund das 1,41-fache seines Durchmessers)."""
+    M = np.stack([a, b, w, np.ones(len(a))], axis=1)
+    y = -(a * a + b * b + w * w)
+    coef, *_ = np.linalg.lstsq(M, y, rcond=None)
+    ca, cb, cw = -coef[0] / 2, -coef[1] / 2, -coef[2] / 2
+    r2 = ca * ca + cb * cb + cw * cw - coef[3]
+    if not np.isfinite(r2) or r2 <= 0:
+        return None
+    rad = math.sqrt(r2)
+    dist = np.sqrt((a - ca) ** 2 + (b - cb) ** 2 + (w - cw) ** 2)
+    if float(np.sqrt(np.mean((dist - rad) ** 2))) > CURVED_FIT or rad < 0.33:
+        return None                                              # keine Kugel, oder kleiner als eine Halbkugel ueber dem Loch
+    if float(np.ptp(w[:nrim])) > CURVED_RIM_FLAT:
+        return None                                              # der Rand einer Kappe liegt (fast) in einer Ebene; ein verwundener Rand ist keine Kappe
+    off = float(w[:nrim].mean()) - cw
+    if abs(off) < 1e-3:                                          # Halbkugel: die Nachbarn liegen auf der anderen Seite der Kappe
+        off = float(w[:nrim].mean()) - float(w[nrim:].mean()) if len(w) > nrim else 1.0
+    sign = 1.0 if off > 0 else -1.0
+
+    def h(x, y_):
+        x, y_ = x / diam, y_ / diam
+        return diam * (cw + sign * math.sqrt(max(rad * rad - (x - ca) ** 2 - (y_ - cb) ** 2, 0.0)))
+    return h
 
 
 def _curved_fill(sc, rloop, Pr, cen, n):
@@ -706,6 +745,12 @@ def _curved_fill(sc, rloop, Pr, cen, n):
     w = r @ n
     if np.linalg.matrix_rank(A) < 6:
         return None
+    sph = _sphere_height(r @ u, r @ v, w, len(Pr), diam)
+    if sph is not None:
+        hb = np.array([sph(a, b) for a, b in uv])
+        rise = abs(float(sph(0.0, 0.0)) - float(hb.mean()))
+        if CURVED_MIN * diam <= rise <= CURVED_SPHERE_MAX_RISE * diam:
+            return {"u": u, "v": v, "uv": uv, "h": sph, "hb": hb, "star": star}
     coef, *_ = np.linalg.lstsq(A, w, rcond=None)
     if float(np.sqrt(np.mean((A @ coef - w) ** 2))) > CURVED_FIT:
         return None

@@ -48,9 +48,21 @@ class Sandbox:
 def _scrub(tools, text):
     """Fehlermeldungen nennen den Wurzelordner des Dienstes nicht (Pfade erscheinen relativ dazu)."""
     r = str(tools.sb.root)
-    for form in (r + os.sep, r.replace(os.sep, "/") + "/", r, r.replace(os.sep, "/")):
+    dbl = r.replace(chr(92), chr(92) + chr(92))                                 # repr() einer OSError-Meldung verdoppelt die Backslashes
+    for form in (dbl + chr(92) + chr(92), dbl + os.sep, r + os.sep, r.replace(os.sep, "/") + "/", dbl, r, r.replace(os.sep, "/")):
         text = text.replace(form, "" if form.endswith(("/", os.sep)) else ".")
     return text
+
+
+def _scrub_obj(tools, obj):
+    """Auch Erfolgsantworten (z. B. 'Geschrieben: <Pfad>') nennen den Wurzelordner nicht."""
+    if isinstance(obj, str):
+        return _scrub(tools, obj)
+    if isinstance(obj, list):
+        return [_scrub_obj(tools, x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _scrub_obj(tools, v) for k, v in obj.items()}
+    return obj
 
 
 # ============================================================================= Werkzeuge
@@ -196,7 +208,7 @@ def call_tool(tools, name, args):
     if not isinstance(args, dict):
         raise MeshcutError("Die Argumente muessen ein JSON-Objekt sein.")
     with LOCK:
-        return getattr(tools, name)(args)
+        return _scrub_obj(tools, getattr(tools, name)(args))
 
 
 # ============================================================================= MCP (stdio)
@@ -276,8 +288,12 @@ def make_handler(tools, token, timeout=30):
             pass
 
         def _send(self, code, obj):
-            body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+            body = json.dumps(obj, ensure_ascii=False).encode("utf-8", "replace")     # ein einzelnes Surrogat im JSON darf die Antwort nicht abbrechen
+            if code >= 400:
+                self.close_connection = True                       # der Body einer abgelehnten Anfrage wurde nicht gelesen: sonst wird er als naechste Anfrage geparst (Request-Smuggling)
             self.send_response(code)
+            if code >= 400:
+                self.send_header("Connection", "close")
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
