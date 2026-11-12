@@ -166,10 +166,10 @@ def volume_area(V, F):
 
 def directed_edges(F):
     F = np.asarray(F, dtype=np.int64).reshape(-1, 3)
+    F = F[(F[:, 0] != F[:, 1]) & (F[:, 1] != F[:, 2]) & (F[:, 2] != F[:, 0])]   # Dreiecke mit doppeltem Eckpunkt (nach Rundung auf float32 zusammengefallen) haben keine Flaeche und zaehlen nicht
     a = F.reshape(-1)
     b = F[:, [1, 2, 0]].reshape(-1)
-    keep = a != b                                               # entartete Kanten (a, a) zaehlen nicht
-    return a[keep], b[keep]
+    return a, b
 
 
 def edge_report(F, nv=None):

@@ -1474,7 +1474,7 @@ def edit_scene(sc, region, mode, shape="auto", axis="auto", scale=1.0, material=
     out.faces = [sc.faces[i] for i in kept] + new_faces
     steady = False                                                # bei einem Koerper ohne spuerbare Volumenaenderung waere "das Volumen schrumpft" falsch
     if _single_closed_solid(sc):                                  # ein Koerper: die Volumenaenderung wird immer genannt, damit eine zu flache oder zu hohe Fuellung nie still bleibt
-        v0, v1 = _scene_volume(sc), _scene_volume(out)
+        v0, v1 = abs(_scene_volume(sc)), abs(_scene_volume(out))        # nach innen orientierte Koerper haben negatives Volumen, der Betrag zaehlt
         if v0 > 0 and abs(v1 - v0) > VOLUME_NOTE * v0:
             hints.append("Das Volumen aendert sich um %+.0f %% (%.4g -> %.4g). Bei einem entfernten Teil ist das zu erwarten; sitzt das Loch in einer Woelbung, kann die Fuellung zu flach oder zu hoch sein." % (100.0 * (v1 - v0) / v0, v0, v1))
         steady = v0 > 0 and abs(v1 - v0) <= STEADY_VOLUME * v0

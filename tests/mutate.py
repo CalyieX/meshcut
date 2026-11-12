@@ -341,6 +341,13 @@ MUTANTS = [
     ('r22 edit: LinAlgError nicht gefangen', 'except np.linalg.LinAlgError:', 'except ZeroDivisionError:', 'kkmeshcut_edit.py'),
     ('r22 ai: parts=0 wird zu 2', 'k = 2 if parts is None else int(parts)', 'k = int(parts or 2)', 'kkmeshcut_ai.py'),
     ('r22 edit: Volumenhinweis nie', 'abs(v1 - v0) > VOLUME_NOTE * v0:', 'abs(v1 - v0) > 1e9 * v0:', 'kkmeshcut_edit.py'),
+    ('r23 core: doppelte Eckpunkte zaehlen als Kante', 'F = F[(F[:, 0] != F[:, 1]) & (F[:, 1] != F[:, 2]) & (F[:, 2] != F[:, 0])]', 'F = F[F[:, 0] != F[:, 1]]', 'kkmeshcut.py'),
+    ('r23 edit: Betrag des Volumens', 'v0, v1 = abs(_scene_volume(sc)), abs(_scene_volume(out))', 'v0, v1 = _scene_volume(sc), _scene_volume(out)', 'kkmeshcut_edit.py'),
+    ('r23 ai: parts<1 nicht abgelehnt', 'or parts < 1):', 'or parts < 0):', 'kkmeshcut_ai.py'),
+    ('r23 edit: Schwelle 10 Prozent', 'VOLUME_NOTE = 0.02 ', 'VOLUME_NOTE = 0.10 ', 'kkmeshcut_edit.py'),
+    ('r23 edit: Schwelle 0.5 Prozent', 'VOLUME_NOTE = 0.02 ', 'VOLUME_NOTE = 0.005 ', 'kkmeshcut_edit.py'),
+    ('r24 edit: STEADY zehnfach', 'STEADY_VOLUME = 0.02', 'STEADY_VOLUME = 0.2', 'kkmeshcut_edit.py'),
+    ('r24 edit: STEADY ohne Betrag', 'steady = v0 > 0 and abs(v1 - v0) <= STEADY_VOLUME * v0', 'steady = v0 > 0 and (v1 - v0) <= STEADY_VOLUME * v0', 'kkmeshcut_edit.py'),
     ('r21 edit: Volumen falsch gerechnet', 'float(np.einsum("ij,ij->", V[tri[:, 0]], np.cross(V[tri[:, 1]], V[tri[:, 2]]))) / 6.0', 'float(np.einsum("ij,ij->", V[tri[:, 0]], np.cross(V[tri[:, 1]], V[tri[:, 2]]))) / 3.0', 'kkmeshcut_edit.py'),
 ]
 

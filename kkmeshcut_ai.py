@@ -410,6 +410,8 @@ def assign_names(mesh, labels, names, llm=None):
 
 # ============================================================================= Gesamtablauf
 def segment_mesh(mesh, backend="kmeans", parts=None, names=None, prompt=None, llm=None):
+    if parts is not None and (isinstance(parts, bool) or not isinstance(parts, int) or parts < 1):
+        fail("--parts: eine ganze Zahl ab 1 noetig.")
     names = clean_names(names) if names else None
     if prompt and names:
         fail("Entweder --names oder --prompt angeben, nicht beides.")

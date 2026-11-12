@@ -2030,3 +2030,55 @@ def test_huge_coordinates_give_a_clear_message_not_a_numpy_one(tmp_path):
         mc.remove(p, name="red", out=tmp_path / "o.obj")
     except mc.MeshcutError as e:
         assert "SVD" not in str(e)
+
+
+# ============================================================================= Spock R21
+def test_grid_split_of_a_sphere_writes_watertight_parts_after_float32_rounding(tmp_path):
+    """Spock R21: drei Ebenen durch einen Eckpunkt liessen im Teil ein Dreieck zurueck, das nach dem Runden auf float32 zwei gleiche Eckpunkte hat; die Datei war nicht wasserdicht."""
+    m = shapes.sphere(48, 24)
+    src = tmp_path / "s.stl"
+    src.write_bytes(mc.mesh_bytes("stl", m.V, m.F, "s"))
+    args = ["split", str(src), str(tmp_path / "o")] + [x for p in ("x=-0.5", "y=-0.5", "z=-0.5", "z=0.5") for x in ("--plane", p)] + ["--verify"]
+    mc.main(args)                                                          # --verify bricht mit SystemExit ab, wenn ein Teil nicht wasserdicht ist
+
+
+def test_triangles_with_a_repeated_vertex_do_not_count_as_edges():
+    F = np.array([[0, 1, 2], [0, 2, 1], [3, 4, 4]])
+    assert mc.edge_report(F)["bad"] == 0
+
+
+def test_inverted_solid_gets_the_volume_note_too(tmp_path):
+    p, v0 = _scaled_sphere_obj(tmp_path, (1, 1, 0.5), 0.5)
+    lines = p.read_text().splitlines()
+    flipped = [(" ".join(["f"] + l.split()[1:][::-1]) if l.startswith("f ") else l) for l in lines]
+    q = tmp_path / "i.obj"
+    q.write_text("\n".join(flipped) + "\n")
+    r = mc.remove(q, name="red", out=tmp_path / "o.obj")
+    assert "Das Volumen aendert sich" in r["text"]
+
+
+def test_volume_note_threshold_sits_at_two_percent(tmp_path):
+    """Spock R21: die Schwelle war ungetestet (0.10 statt 0.02 blieb gruen)."""
+    p, v0 = _scaled_sphere_obj(tmp_path, (1, 1, 0.5), 0.5)                 # +4 Prozent: Hinweis
+    assert "Das Volumen aendert sich" in mc.remove(p, name="red", out=tmp_path / "a.obj")["text"]
+    p, v0 = _scaled_sphere_obj(tmp_path, (1, 1, 1), 0.6)                   # unter 1 Prozent: kein Hinweis
+    assert "Das Volumen aendert sich" not in mc.remove(p, name="red", out=tmp_path / "b.obj")["text"]
+    assert ed.VOLUME_NOTE == 0.02
+
+
+@pytest.mark.parametrize("backend", ["components", "kmeans"])
+def test_zero_parts_is_refused_for_every_backend(tmp_path, backend):
+    m = shapes.cube(1.0)
+    src = tmp_path / "c.stl"
+    src.write_bytes(mc.mesh_bytes("stl", m.V, m.F, "c"))
+    with pytest.raises(mc.MeshcutError, match="parts"):
+        import kkmeshcut_ai as ai
+        ai.segment_mesh(mc.load_mesh(src), backend=backend, parts=0)
+
+
+def test_curved_surroundings_hint_stays_when_the_volume_shrinks_noticeably(tmp_path):
+    """Spock R21: STEADY_VOLUME zehnfach blieb ungeprueft; bei -12 Prozent Volumen muss der Gewoelbt-Hinweis erscheinen."""
+    p, v0 = _scaled_sphere_obj(tmp_path, (1, 1, 0.8), 0.5)
+    r = mc.remove(p, name="red", out=tmp_path / "o.obj")
+    assert "gewoelbten Umgebung" in r["text"]
+    assert ed.STEADY_VOLUME == 0.02
