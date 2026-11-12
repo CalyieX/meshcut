@@ -304,6 +304,12 @@ MUTANTS = [
     ('r13 edit: Textur roh', 'name = _plain(tok[-1]) if escaped else tok[-1]', 'name = tok[-1]', "kkmeshcut_edit.py"),
     ('r13 edit: Material mit Randleerzeichen', 'm != m.strip() or ', '', "kkmeshcut_edit.py"),
     ('r13 edit: Name mit strip()', 'rest = ln.strip(" \\t")[len(tag):].strip(" \\t")', 'rest = ln.strip()[len(tag):].strip()', "kkmeshcut_edit.py"),
+    ('r14 edit: Kuppelhoehe unbegrenzt', 'rise < CURVED_MIN * diam or rise > CURVED_MAX_RISE * diam', 'rise < CURVED_MIN * diam', 'kkmeshcut_edit.py'),
+    ('r14 edit: Pruefer mit Massstab', 'ranking = rank_shapes(sc, region, 1.0, axis)', 'ranking = rank_shapes(sc, region, scale, axis)', 'kkmeshcut_edit.py'),
+    ('r14 edit: off erlaubt', 'm.strip(" \\t").lower() == "off"', 'False', 'kkmeshcut_edit.py'),
+    ('r14 edit: Name mit strip()', 'want = str(name).strip(" \\t").lower()', 'want = str(name).strip().lower()', 'kkmeshcut_edit.py'),
+    ('r14 serve: Wurzel in Meldungen', 'text = text.replace(form, "" if form.endswith(("/", os.sep)) else ".")', 'text = text', 'kkmeshcut_serve.py'),
+    ('r14 kern: CSV mit BOM', 'read_text(encoding="utf-8-sig").strip()) if x]', 'read_text(encoding="utf-8").strip()) if x]', 'kkmeshcut.py'),
 ]
 
 

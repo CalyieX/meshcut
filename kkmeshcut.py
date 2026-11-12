@@ -2241,7 +2241,8 @@ def read_label_file(path):
         elif ext == ".json":
             arr = np.array(json.loads(p.read_text(encoding="utf-8")))
         elif ext in (".csv", ".txt"):
-            arr = np.array([float(x) for x in re.split(r"[,\s;]+", p.read_text(encoding="utf-8").strip()) if x])
+            toks = [x for x in re.split(r"[,\s;]+", p.read_text(encoding="utf-8-sig").strip()) if x]     # utf-8-sig: Excel schreibt eine BOM
+            arr = np.array([float(x) for x in toks])
         else:
             fail("Zuordnungskarte: .npy, .json oder .csv noetig, nicht '%s'." % ext)
     except MeshcutError:

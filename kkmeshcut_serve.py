@@ -45,6 +45,14 @@ class Sandbox:
         return p
 
 
+def _scrub(tools, text):
+    """Fehlermeldungen nennen den Wurzelordner des Dienstes nicht (Pfade erscheinen relativ dazu)."""
+    r = str(tools.sb.root)
+    for form in (r + os.sep, r.replace(os.sep, "/") + "/", r, r.replace(os.sep, "/")):
+        text = text.replace(form, "" if form.endswith(("/", os.sep)) else ".")
+    return text
+
+
 # ============================================================================= Werkzeuge
 def _opt(args, key, kind):
     v = args.get(key)
@@ -223,9 +231,9 @@ def mcp_handle(tools, msg):
             res = call_tool(tools, params["name"], params.get("arguments") or {})
             return _mcp_reply(id_, {"content": [{"type": "text", "text": json.dumps(res, ensure_ascii=False)}], "isError": False})
         except MeshcutError as e:
-            return _mcp_reply(id_, {"content": [{"type": "text", "text": "Fehler: %s" % e}], "isError": True})
+            return _mcp_reply(id_, {"content": [{"type": "text", "text": "Fehler: %s" % _scrub(tools, str(e))}], "isError": True})
         except Exception as e:                                   # nie den Dienst beenden
-            return _mcp_reply(id_, {"content": [{"type": "text", "text": "Fehler: %s" % ((str(e).splitlines() or [type(e).__name__])[0])}], "isError": True})
+            return _mcp_reply(id_, {"content": [{"type": "text", "text": "Fehler: %s" % _scrub(tools, (str(e).splitlines() or [type(e).__name__])[0])}], "isError": True})
     return _mcp_reply(id_, error={"code": -32601, "message": "Methode unbekannt: %s" % method})
 
 
@@ -316,9 +324,9 @@ def make_handler(tools, token, timeout=30):
             try:
                 self._send(200, call_tool(tools, self.path[4:], args))
             except MeshcutError as e:
-                self._send(400, {"error": str(e)})
+                self._send(400, {"error": _scrub(tools, str(e))})
             except Exception as e:
-                self._send(500, {"error": (str(e).splitlines() or [type(e).__name__])[0]})
+                self._send(500, {"error": _scrub(tools, (str(e).splitlines() or [type(e).__name__])[0])})
     H.timeout = timeout                                           # ein stockender oder halber Aufruf haelt keinen Thread dauerhaft fest
     return H
 

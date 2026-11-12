@@ -1585,7 +1585,7 @@ def test_mtl_texture_with_a_latin1_name_is_copied(tmp_path):
     assert (dst / "t\u00e9x.png").exists()
 
 
-@pytest.mark.parametrize("bad", [" a", "a ", "a\u2028b", "a\u00a0", "a\u0085b"])
+@pytest.mark.parametrize("bad", [" a", "a ", "a\u2028b", "a\u0085b"])
 def test_material_option_refuses_edge_spaces_and_line_separators(bad):
     with pytest.raises(mc.MeshcutError):
         ed._check_material(bad)
@@ -1595,3 +1595,79 @@ def test_names_keep_a_trailing_nbsp(tmp_path):
     p = tmp_path / "n.obj"
     p.write_bytes("v 0 0 0\nv 1 0 0\nv 0 1 0\no a\u00a0\nf 1 2 3\n".encode("utf-8"))
     assert ed.read_scene(p).faces[0].obj == "a\u00a0"
+
+
+# ----------------------------------------------------------------------------- Spock R12
+def _sphere_obj_with_cap(tmp_path, zc):
+    m = shapes.sphere(48, 32)
+    lines = ["v %.17g %.17g %.17g" % tuple(float(x) for x in p) for p in m.V]
+    cur = None
+    for f in m.F:
+        mat = "red" if m.V[f].mean(axis=0)[2] > zc else "blue"
+        if mat != cur:
+            lines.append("usemtl " + mat)
+            cur = mat
+        lines.append("f %d %d %d" % tuple(int(i) + 1 for i in f))
+    p = tmp_path / "s.obj"
+    p.write_text("\n".join(lines) + "\n")
+    return p
+
+
+@pytest.mark.parametrize("zc", [0.7, 0.3, 0.0])
+def test_big_cap_hole_never_gets_a_spike(tmp_path, zc):
+    """Spock R12: eine Paraboloid-Fuellung eines grossen Lochs ragte als Spitze weit ueber die Kugel; jetzt bleibt sie nahe an der Kugel oder flach."""
+    p = _sphere_obj_with_cap(tmp_path, zc)
+    out = tmp_path / "o.obj"
+    mc.remove(p, name="red", out=out)
+    V = mc.load_mesh(out).V
+    assert np.linalg.norm(V, axis=1).max() < 1.1 and V[:, 2].min() > -1.1
+
+
+def test_curved_fill_refuses_a_rise_above_a_third_of_the_diameter():
+    ang = np.linspace(0, 2 * math.pi, 12, endpoint=False)
+    for k, expect in ((0.3, True), (3.0, False)):
+        f = lambda x, y, k=k: k * (x * x + y * y)
+        Pr = np.array([[math.cos(a), math.sin(a), f(math.cos(a), math.sin(a))] for a in ang])
+        sc = ed.Scene()
+        sc.V = np.vstack([Pr, [[1.6, 0, f(1.6, 0)], [1.5, 0.4, f(1.5, 0.4)]]])
+        sc.faces = [ed.Face([(0, -1, -1), (12, -1, -1), (13, -1, -1)])]
+        rloop = [(i, i, -1, -1, 0) for i in range(12)]
+        got = ed._curved_fill(sc, rloop, Pr, Pr.mean(axis=0), np.array([0.0, 0.0, 1.0]))
+        assert (got is not None) == expect
+
+
+@pytest.mark.parametrize("scale", [0.8, 1.5, 2.0])
+def test_swap_scale_does_not_change_the_chosen_shape(tmp_path, scale):
+    sc, regs = regions_of(scene_obj(tmp_path))
+    _, _, rep = ed.edit_scene(sc, regs[1], "swap", scale=scale)
+    assert rep["ersatz"].startswith("Quader") and not rep["hinweise"]
+
+
+def test_material_off_is_refused_with_a_clear_message():
+    with pytest.raises(mc.MeshcutError, match="off"):
+        ed._check_material("off")
+    with pytest.raises(mc.MeshcutError, match="off"):
+        ed._check_material("Off")
+
+
+def test_material_with_a_trailing_nbsp_can_be_selected_by_name(tmp_path):
+    p = tmp_path / "n.obj"
+    p.write_bytes("v 0 0 0\nv 1 0 0\nv 0 1 0\nv 5 5 5\nv 6 5 5\nv 5 6 5\nusemtl red\u00a0\no A\nf 1 2 3\nusemtl b\no B\nf 4 5 6\n".encode("utf-8"))
+    out = tmp_path / "o.obj"
+    mc.remove(p, name="red\u00a0", out=out)
+    assert out.exists()
+    ed._check_material("red\u00a0")
+
+
+def test_service_errors_do_not_show_the_root_folder(tmp_path):
+    import kkmeshcut_serve as serve
+    tools = serve.Tools(serve.Sandbox(tmp_path))
+    root = str(tmp_path.resolve())
+    assert serve._scrub(tools, root + os.sep + "x.obj gibt es nicht.") == "x.obj gibt es nicht."
+    assert root not in serve._scrub(tools, "Fehler in " + root.replace(os.sep, "/") + "/a/b.obj")
+
+
+def test_label_csv_with_a_byte_order_mark_is_read(tmp_path):
+    p = tmp_path / "l.csv"
+    p.write_bytes(b"\xef\xbb\xbf0,1,0\n")
+    assert list(mc.read_label_file(p)) == [0, 1, 0]

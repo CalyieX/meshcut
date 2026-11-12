@@ -30,6 +30,7 @@ MAX_LABELS = 60                                                  # so viele Numm
 MAX_RENDER_TRIANGLES = 40_000
 SCALE_RANGE = (0.01, 100.0)                                      # --scale: darunter/darueber entstuende ein unbrauchbarer Ersatz
 SIZE_RANGE = (64, 4096)                                          # --size des Uebersichtsbildes in Pixeln                                    # mehr Dreiecke werden fuers Bild gleichmaessig ausgeduennt
+CURVED_MAX_RISE = 0.3                                            # Mitte des Paraboloids hoechstens so weit (Anteil des Durchmessers) ueber dem Rand: sonst ragt eine Spitze ins Leere, und flach ist besser
 CURVED_MIN = 0.01                                                # Loch folgt der Wölbung, wenn die Mitte mehr als dieser Anteil des Durchmessers von der Randebene abweicht
 CURVED_FIT = 0.02                                                # ... und der Paraboloid die Umgebung mit höchstens diesem Fehler (Anteil des Durchmessers) trifft
 UV_FIT = 0.1                                                     # UV der gewoelbten Fuellung aus der Lage, wenn der Randfit hoechstens diesen Anteil der UV-Spanne danebenliegt
@@ -613,7 +614,7 @@ def choose_region(sc, regions, region=None, at=None, name=None):
             fail("Es gibt keine Region %d - gueltig sind 1 bis %d (siehe `meshcut regions`)." % (rid, len(regions)))
         return regions[rid - 1]
     if name not in (None, ""):
-        want = str(name).strip().lower()
+        want = str(name).strip(" \t").lower()
         hit = [r for r in regions if r["name"].lower() == want or any(a["name"].lower() == want for a in r["also"])]
         if not hit:
             names = []
@@ -713,7 +714,8 @@ def _curved_fill(sc, rloop, Pr, cen, n):
         a, b = a / diam, b / diam
         return diam * (coef[0] + coef[1] * a + coef[2] * b + coef[3] * a * a + coef[4] * a * b + coef[5] * b * b)
     hb = np.array([h(a, b) for a, b in uv])
-    if abs(float(h(0.0, 0.0)) - float(hb.mean())) < CURVED_MIN * diam:
+    rise = abs(float(h(0.0, 0.0)) - float(hb.mean()))
+    if rise < CURVED_MIN * diam or rise > CURVED_MAX_RISE * diam:
         return None
     return {"u": u, "v": v, "uv": uv, "h": h, "hb": hb, "star": star}
 
@@ -1305,7 +1307,7 @@ def edit_scene(sc, region, mode, shape="auto", axis="auto", scale=1.0, material=
     ranking = []
     if mode == "swap":
         if shape in (None, "auto"):                                  # Pruefer: mehrere Kandidaten rechnen, selbst bewerten, den besten nehmen
-            ranking = rank_shapes(sc, region, scale, axis)
+            ranking = rank_shapes(sc, region, 1.0, axis)                   # die Form wird am Original gewaehlt; --scale gilt erst fuer den Ersatz
             kind, ax = ranking[0][1], ranking[0][2]
         else:
             kind, ax = choose_shape(region, shape, axis)
@@ -1352,7 +1354,9 @@ def _check_numbers(a):
 
 
 def _check_material(m):
-    if m is not None and (not m.strip() or m != m.strip() or len(m) > 128
+    if m is not None and m.strip(" \t").lower() == "off":
+        fail("Material 'off' ist in OBJ der Wert fuer 'kein Material'; einen anderen Namen waehlen (oder --material weglassen, wenn der Ersatz keines braucht).")
+    if m is not None and (not m.strip(" \t") or m != m.strip(" \t") or len(m) > 128
                           or any(ord(ch) < 32 or ord(ch) == 127 or ch in "\u0085\u2028\u2029" for ch in m)):
         fail("Material: ein Name ohne Zeilenumbruch, Steuerzeichen und Leerzeichen am Rand, hoechstens 128 Zeichen.")
 
