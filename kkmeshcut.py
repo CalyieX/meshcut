@@ -937,7 +937,7 @@ def split_planes(mesh, planes, cap=True, table=None, mode="plane", snap=1e-12):
     if len(parts) > MAX_PARTS:
         fail("Das ergibt %d Teile - mehr als %d sind nicht erlaubt." % (len(parts), MAX_PARTS))
     if len(parts) < 2:
-        fail("Die Ebene(n) schneiden das Netz nicht - es bleibt ein einziges Teil.")
+        fail("Die Ebene(n) schneiden das Netz nicht - es bleibt ein einziges Teil (liegt die Ebene nur um Rundungsbreite im Netz, waere die Scheibe duenner als die Zahlengenauigkeit).")
     split_ids = _split_ids(mesh, parts)
     split_coords = mesh.V[mesh.F[split_ids]]
     return SplitResult(parts, mode, planes, mesh, split_ids, split_coords, report)
@@ -2334,10 +2334,14 @@ def cmd_split(a):
         res = split_planes(mesh, planes, cap=cap, table=table, mode=mode, snap=a.snap)
         if cap and a.format in FLOAT32_FORMATS and a.snap == SNAP_DEFAULT and _lost_in_float32(res):
             # Eine Ebene, die kaum neben einem Eckpunkt liegt, gibt im Teil Eckpunkte, die in float32 mit dem Nachbarn zusammenfallen: die Datei waere nicht wasserdicht.
-            # Dann zaehlen Eckpunkte innerhalb von 4 float32-Schritten als auf der Ebene (das verschiebt nichts, siehe --snap).
-            again = split_planes(mesh, planes, cap=cap, table=table, mode=mode, snap=FLOAT32_SNAP)
-            if not _lost_in_float32(again):
-                res = again
+            # Dann zaehlen Eckpunkte innerhalb von 4 float32-Schritten als auf der Ebene (das verschiebt nichts, siehe --snap). Ein Netz weit vom Ursprung hat groebere Schritte:
+            # die Schwelle waechst mit dem Verhaeltnis Entfernung/Groesse.
+            ext = float((hi - lo).max())
+            mag = float(np.abs(mesh.V).max())
+            fsnap = min(FLOAT32_SNAP * max(1.0, mag / ext if ext > 0 else 1.0), 1e-2)
+            res = split_planes(mesh, planes, cap=cap, table=table, mode=mode, snap=fsnap)
+            if _lost_in_float32(res):
+                say("Hinweis: Mit 32-Bit-Zahlen (%s) sind die Teile nicht wasserdicht - das Netz liegt weit vom Ursprung oder die Ebene fast auf einer Eckpunktebene. Zum Ursprung verschieben oder --format obj/ply/3mf nehmen." % a.format)
         for p in res.parts:
             er = edge_report(p.F, len(p.V))
             if cap and not er["watertight"]:

@@ -2094,3 +2094,17 @@ def test_plane_just_beside_a_vertex_ring_keeps_float32_parts_watertight(tmp_path
     src.write_bytes(mc.mesh_bytes("stl", m.V * 10, m.F, "s"))
     z = -9.238795325 + offset
     mc.main(["split", str(src), str(tmp_path / "o"), "--plane", "z=%.10f" % z, "--format", fmt, "--verify"])
+
+
+def test_far_from_the_origin_a_float32_split_is_refused_not_written_broken(tmp_path):
+    """Spock R24: ein Netz bei 1e4 mit einer Ebene dicht an einem Eckpunktring schrieb still nicht wasserdichte STL-Teile."""
+    m = shapes.cube(10.0, lo=(0, 0, 0), sub=2)
+    src = tmp_path / "c.stl"
+    src.write_bytes(mc.mesh_bytes("stl", m.V + 1e4, m.F, "c"))
+    out = tmp_path / "o"
+    try:
+        mc.main(["split", str(src), str(out), "--plane", "y=10009.99970703125", "--verify"])
+    except SystemExit as e:
+        assert "schneiden das Netz nicht" in str(e)                        # schon split verweigert; nicht erst --verify nach dem Schreiben
+    else:
+        pytest.fail("haette verweigert oder wasserdicht geschrieben werden muessen")

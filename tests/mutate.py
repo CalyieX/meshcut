@@ -350,6 +350,7 @@ MUTANTS = [
     ('r24 edit: STEADY ohne Betrag', 'steady = v0 > 0 and abs(v1 - v0) <= STEADY_VOLUME * v0', 'steady = v0 > 0 and (v1 - v0) <= STEADY_VOLUME * v0', 'kkmeshcut_edit.py'),
     ('r26 core: float32-Verlust nicht abgefangen', 'if cap and a.format in FLOAT32_FORMATS and a.snap == SNAP_DEFAULT and _lost_in_float32(res):', 'if False:', 'kkmeshcut.py'),
     ('r26 core: float32-Schwelle zu klein', 'FLOAT32_SNAP = 4 * float(np.finfo(np.float32).eps)', 'FLOAT32_SNAP = 1e-9', 'kkmeshcut.py'),
+    ('r27 core: float32-Schwelle ohne Entfernung', 'fsnap = min(FLOAT32_SNAP * max(1.0, mag / ext if ext > 0 else 1.0), 1e-2)', 'fsnap = FLOAT32_SNAP', 'kkmeshcut.py'),
     ('r21 edit: Volumen falsch gerechnet', 'float(np.einsum("ij,ij->", V[tri[:, 0]], np.cross(V[tri[:, 1]], V[tri[:, 2]]))) / 6.0', 'float(np.einsum("ij,ij->", V[tri[:, 0]], np.cross(V[tri[:, 1]], V[tri[:, 2]]))) / 3.0', 'kkmeshcut_edit.py'),
 ]
 
