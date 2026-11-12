@@ -32,6 +32,7 @@ SCALE_RANGE = (0.01, 100.0)                                      # --scale: daru
 SIZE_RANGE = (64, 4096)                                          # --size des Uebersichtsbildes in Pixeln                                    # mehr Dreiecke werden fuers Bild gleichmaessig ausgeduennt
 CURVED_SPHERE_MAX_RISE = 0.37                                    # Anteil der Diagonale des Randes: eine Halbkugel hat die Hoehe R bei einer Diagonale von rund 2,83 R (0.354), dazu Spielraum fuer den gezackten Rand
 STAR_TOL = 1e-9                                                  # Rundungsspielraum der Winkelreihenfolge des Randes (Bogenmass)
+CURVED_RIM_MISS = 0.05                                           # Hoehenfunktion der Kugel darf den Rand hoechstens so weit verfehlen (Anteil der Diagonale)
 CURVED_SPHERE_FIT = 0.0002                                       # Kugelfit: Abweichung von Rand und erstem Ring (Anteil der Diagonale); ein Ellipsoid trifft eine Kugel nur grob und bekommt keine
 BENT_RING = 0.003                                                # liegt der erste Nachbarring weiter als dies (Anteil der Diagonale) neben der Randebene, ist die Umgebung gewoelbt
 CURVED_RIM_FLAT = 0.1                                            # der Rand einer Kappe schwankt hoechstens so stark (Anteil des Durchmessers) um seine Ebene; ein Dreiecksnetz zackt ihn
@@ -783,7 +784,8 @@ def _curved_fill(sc, rloop, Pr, cen, n):
     if sph is not None:
         hb = np.array([sph(a, b) for a, b in uv])
         rise = abs(float(sph(0.0, 0.0)) - float(hb.mean()))
-        if rise > CURVED_SPHERE_MAX_RISE * diam:
+        off_rim = float(np.abs(hb - w[:len(Pr)] * diam).max())        # die Hoehenfunktion muss den Rand treffen: bei Kappen ueber der Halbkugel ist die Kugel kein Graph ueber der Randebene
+        if rise > CURVED_SPHERE_MAX_RISE * diam or off_rim > CURVED_RIM_MISS * diam:
             fail("Das Loch liegt auf einer Kugel und ist groesser als eine Halbkugel; eine Fuellung waere geraten. "
                  "Ein kleineres Element waehlen oder die Kappe mit split abtrennen.")
         if CURVED_MIN * diam <= rise:
@@ -1303,7 +1305,36 @@ def _check_geometry(sc_new, back, dst):
         fail("Selbstpruefung fehlgeschlagen: Flaeche oder Ausdehnung der geschriebenen Datei weichen von der Szene ab (%s)." % dst)
 
 
+def _scene_volume(sc):
+    """Vorzeichenbehaftetes Volumen (Fan je Flaeche); bei einem geschlossenen, nach aussen gewundenen Netz positiv."""
+    if not len(sc.V):
+        return 0.0
+    tot = 0.0
+    V = sc.V
+    for f in sc.faces:
+        i = [c[0] for c in f.c]
+        for k in range(1, len(i) - 1):
+            tot += float(np.dot(V[i[0]], np.cross(V[i[k]], V[i[k + 1]])))
+    return tot / 6.0
+
+
+def _single_closed_solid(sc):
+    """Ein einziger geschlossener Koerper: nur dann sagt das Vorzeichen des Gesamtvolumens etwas ueber eine Fuellung (mehrere Koerper, auch nach innen gewundene, heben sich auf)."""
+    tri = []
+    for f in sc.faces:
+        i = [c[0] for c in f.c]
+        for k in range(1, len(i) - 1):
+            tri.append((i[0], i[k], i[k + 1]))
+    if not tri:
+        return False
+    F = np.array(tri, dtype=np.int64)
+    er = mc.edge_report(F) if hasattr(mc, "edge_report") else None
+    return er is not None and er["watertight"] and mc.components(F) == 1
+
+
 def _check_orientation(src_scene, back, dst):
+    if _single_closed_solid(src_scene) and _scene_volume(src_scene) > 0 >= _scene_volume(back):
+        fail("Selbstpruefung fehlgeschlagen: das Ergebnis hat kein positives Volumen mehr, die Fuellung liegt falsch herum (%s). Ein kleineres Element waehlen." % dst)
     if directed_duplicates(back) > directed_duplicates(src_scene):
         fail("Selbstpruefung fehlgeschlagen: die Fuellung liegt teilweise falsch herum oder ueberlappt sich (%s). Ein kleineres Element waehlen." % dst)
 

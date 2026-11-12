@@ -332,6 +332,8 @@ MUTANTS = [
     ('r18 edit: Kugelfit zu locker', 'CURVED_SPHERE_FIT = 0.0002', 'CURVED_SPHERE_FIT = 0.05', 'kkmeshcut_edit.py'),
     ('r18 edit: Kugel ohne zweiten Ring', '    if len(far):', '    if False:', 'kkmeshcut_edit.py'),
     ('r18 edit: gewoelbte Umgebung ohne Hinweis', 'bent += int(', 'bent += 0 * int(', 'kkmeshcut_edit.py'),
+    ('r19 edit: Kugel trifft den Rand nicht', 'or off_rim > CURVED_RIM_MISS * diam:', ':', 'kkmeshcut_edit.py'),
+    ('r19 edit: negatives Volumen durchgelassen', 'if _single_closed_solid(src_scene) and _scene_volume(src_scene) > 0 >= _scene_volume(back):', 'if False:', 'kkmeshcut_edit.py'),
 ]
 
 

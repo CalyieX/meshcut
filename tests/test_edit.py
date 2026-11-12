@@ -1928,3 +1928,34 @@ def test_zigzag_rim_of_a_triangle_mesh_still_gets_the_sphere_fill(tmp_path):
     mc.remove(p, name="red", out=out)
     m = mc.load_mesh(out)
     assert mc.volume_area(m.V, m.F)[0] > 0.97 * v0
+
+
+# ============================================================================= Spock R17
+def test_cap_beyond_a_hemisphere_on_a_sphere_is_refused_with_a_clear_message(tmp_path):
+    """Spock R17: Kappen ueber der Halbkugel wurden still mit der Haelfte des Volumens gefuellt; die Kugel ist dort kein Graph ueber der Randebene."""
+    p = _sphere_obj_with_cap(tmp_path, -0.5)
+    with pytest.raises(mc.MeshcutError, match="Halbkugel"):
+        mc.remove(p, name="red", out=tmp_path / "o.obj")
+
+
+@pytest.mark.parametrize("scale", [(1, 0.6, 0.3), (1, 1, 0.5)])
+def test_big_ellipsoid_cap_is_refused_or_flagged_never_silent(tmp_path, scale):
+    p, v0 = _scaled_sphere_obj(tmp_path, scale, -0.5)
+    out = tmp_path / "o.obj"
+    try:
+        r = mc.remove(p, name="red", out=out)
+    except mc.MeshcutError:
+        return
+    m = mc.load_mesh(out)
+    assert mc.volume_area(m.V, m.F)[0] > 0 and "Hinweis" in r["text"]
+
+
+def test_a_result_without_positive_volume_is_refused_by_the_self_check():
+    good = "v 0 0 0\nv 1 0 0\nv 0 1 0\nv 0 0 1\nf 1 3 2\nf 1 2 4\nf 1 4 3\nf 2 3 4\n"
+    flipped = "v 0 0 0\nv 1 0 0\nv 0 1 0\nv 0 0 1\nf 1 2 3\nf 1 4 2\nf 1 3 4\nf 2 4 3\n"
+    a, b = ed.parse_obj(good.encode()), ed.parse_obj(flipped.encode())
+    pos, neg = (a, b) if ed._scene_volume(a) > 0 else (b, a)
+    assert ed._scene_volume(pos) > 0 > ed._scene_volume(neg)
+    ed._check_orientation(pos, pos, "x.obj")
+    with pytest.raises(mc.MeshcutError, match="positives Volumen"):
+        ed._check_orientation(pos, neg, "x.obj")
