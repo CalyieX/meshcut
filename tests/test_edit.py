@@ -1725,10 +1725,16 @@ def test_rejected_http_request_does_not_leave_its_body_as_a_second_request(tmp_p
         inner = ("GET /v1/health HTTP/1.1\r\nHost: localhost\r\n\r\n").encode()
         outer = ("POST /v1/info HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n" % len(inner)).encode() + inner
         s = socket.create_connection(("127.0.0.1", port), timeout=5)
-        s.sendall(outer)
+        try:
+            s.sendall(outer)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
         data = b""
         while True:
-            chunk = s.recv(4096)
+            try:
+                chunk = s.recv(4096)
+            except ConnectionResetError:
+                break
             if not chunk:
                 break
             data += chunk
@@ -1782,10 +1788,16 @@ def _raw_http(tmp_path, request):
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
         s = socket.create_connection(("127.0.0.1", srv.server_address[1]), timeout=5)
-        s.sendall(request)
+        try:
+            s.sendall(request)                                           # der Dienst darf schon antworten und schliessen, bevor alles gesendet ist
+        except (BrokenPipeError, ConnectionResetError):
+            pass
         data = b""
         while True:
-            chunk = s.recv(4096)
+            try:
+                chunk = s.recv(4096)
+            except ConnectionResetError:
+                break
             if not chunk:
                 break
             data += chunk
