@@ -1745,8 +1745,9 @@ def test_service_success_reports_do_not_show_the_root_folder(tmp_path):
     root = str(tmp_path.resolve())
     got = serve._scrub_obj(tools, {"report": "Geschrieben: " + root + os.sep + "o.obj", "n": 3, "l": ["x " + root]})
     assert root not in got["report"] and root not in got["l"][0] and got["n"] == 3
-    dbl = root.replace(os.sep, os.sep * 2)
-    assert dbl not in serve._scrub(tools, "OSError: " + dbl + os.sep * 2 + "a")
+    if os.sep == chr(92):                                         # nur unter Windows verdoppelt repr() die Backslashes
+        dbl = root.replace(os.sep, os.sep * 2)
+        assert dbl not in serve._scrub(tools, "OSError: " + dbl + os.sep * 2 + "a")
 
 
 def test_service_calls_scrub_the_root_from_successful_answers(tmp_path):
