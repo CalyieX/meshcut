@@ -1885,3 +1885,46 @@ def test_service_split_validates_and_forwards_snap(tmp_path):
     tools = serve.Tools(serve.Sandbox(tmp_path))
     with pytest.raises(mc.MeshcutError, match="snap"):
         serve.call_tool(tools, "split", {"input": "c.obj", "outdir": "o", "plane": ["1,0,0,0"], "snap": "abc"})
+
+
+# ============================================================================= Spock R16
+def _scaled_sphere_obj(tmp_path, scale, zc):
+    m = shapes.sphere(48, 32)
+    V = m.V * np.array(scale)
+    lines = ["v %.17g %.17g %.17g" % tuple(float(x) for x in p) for p in V]
+    cur = None
+    for f in m.F:
+        mat = "red" if m.V[f].mean(axis=0)[2] > zc else "blue"
+        if mat != cur:
+            lines.append("usemtl " + mat)
+            cur = mat
+        lines.append("f %d %d %d" % tuple(int(i) + 1 for i in f))
+    p = tmp_path / "e.obj"
+    p.write_text("\n".join(lines) + "\n")
+    return p, mc.volume_area(V, m.F)[0]
+
+
+@pytest.mark.parametrize("scale", [(1, 1, 0.5), (1, 0.6, 0.3), (1, 1, 3)])
+@pytest.mark.parametrize("zc", [0.5, 0.25])
+def test_ellipsoid_cap_is_never_filled_above_the_original(tmp_path, scale, zc):
+    """Spock R16: eine Kugel durch Rand und Ring ueberschoss Ellipsoide um bis zu 45 Prozent Volumen; jetzt nur noch, wo die Umgebung wirklich einer Kugel folgt."""
+    p, v0 = _scaled_sphere_obj(tmp_path, scale, zc)
+    out = tmp_path / "o.obj"
+    try:
+        r = mc.remove(p, name="red", out=out)
+    except mc.MeshcutError:
+        return
+    m = mc.load_mesh(out)
+    vol = mc.volume_area(m.V, m.F)[0]
+    assert 0 < vol <= 1.1 * v0
+    if vol < 0.95 * v0:
+        assert "Hinweis" in r["text"]                                          # ein deutlich kleineres Volumen wird nicht verschwiegen
+
+
+def test_zigzag_rim_of_a_triangle_mesh_still_gets_the_sphere_fill(tmp_path):
+    """Spock R16: der Zickzack-Rand einer UV-Kugel (zwei Randpunkte auf demselben Strahl) galt nicht als sternfoermig und wurde flach gefuellt (-23 Prozent Volumen)."""
+    p, v0 = _scaled_sphere_obj(tmp_path, (1, 1, 1), 0.5)
+    out = tmp_path / "o.obj"
+    mc.remove(p, name="red", out=out)
+    m = mc.load_mesh(out)
+    assert mc.volume_area(m.V, m.F)[0] > 0.97 * v0

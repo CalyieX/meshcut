@@ -328,6 +328,10 @@ MUTANTS = [
     ('r17 edit: Kappenseite nach Randlage', 'sign = 1.0 if away > 0 else -1.0', 'sign = 1.0 if float(w[:nrim].mean()) - cw > 0 else -1.0', 'kkmeshcut_edit.py'),
     ('r17 serve: Content-Length beliebig lang', 'r"[0-9]{1,12}"', 'r"[0-9]+"', 'kkmeshcut_serve.py'),
     ('r17 serve: snap fehlt im Dienst', '("verify", "bool"), ("snap", "num")', '("verify", "bool")', 'kkmeshcut_serve.py'),
+    ('r18 edit: Zickzack-Rand nicht sternfoermig', 'np.all(np.diff(ang) > -STAR_TOL)', 'np.all(np.diff(ang) > 0)', 'kkmeshcut_edit.py'),
+    ('r18 edit: Kugelfit zu locker', 'CURVED_SPHERE_FIT = 0.0002', 'CURVED_SPHERE_FIT = 0.05', 'kkmeshcut_edit.py'),
+    ('r18 edit: Kugel ohne zweiten Ring', '    if len(far):', '    if False:', 'kkmeshcut_edit.py'),
+    ('r18 edit: gewoelbte Umgebung ohne Hinweis', 'bent += int(', 'bent += 0 * int(', 'kkmeshcut_edit.py'),
 ]
 
 

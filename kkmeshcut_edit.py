@@ -31,6 +31,9 @@ MAX_RENDER_TRIANGLES = 40_000
 SCALE_RANGE = (0.01, 100.0)                                      # --scale: darunter/darueber entstuende ein unbrauchbarer Ersatz
 SIZE_RANGE = (64, 4096)                                          # --size des Uebersichtsbildes in Pixeln                                    # mehr Dreiecke werden fuers Bild gleichmaessig ausgeduennt
 CURVED_SPHERE_MAX_RISE = 0.37                                    # Anteil der Diagonale des Randes: eine Halbkugel hat die Hoehe R bei einer Diagonale von rund 2,83 R (0.354), dazu Spielraum fuer den gezackten Rand
+STAR_TOL = 1e-9                                                  # Rundungsspielraum der Winkelreihenfolge des Randes (Bogenmass)
+CURVED_SPHERE_FIT = 0.0002                                       # Kugelfit: Abweichung von Rand und erstem Ring (Anteil der Diagonale); ein Ellipsoid trifft eine Kugel nur grob und bekommt keine
+BENT_RING = 0.003                                                # liegt der erste Nachbarring weiter als dies (Anteil der Diagonale) neben der Randebene, ist die Umgebung gewoelbt
 CURVED_RIM_FLAT = 0.1                                            # der Rand einer Kappe schwankt hoechstens so stark (Anteil des Durchmessers) um seine Ebene; ein Dreiecksnetz zackt ihn
 CURVED_MAX_RISE = 0.15                                            # Mitte des Paraboloids hoechstens so weit (Anteil des Durchmessers) ueber dem Rand: sonst ragt eine Spitze ins Leere, und flach ist besser
 CURVED_MIN = 0.01                                                # Loch folgt der Wölbung, wenn die Mitte mehr als dieser Anteil des Durchmessers von der Randebene abweicht
@@ -697,7 +700,26 @@ def _hole_loops(sc, pid, removed):
     return loops
 
 
-def _sphere_height(a, b, w, nrim, diam):
+def _second_ring(sc, rloop):
+    """Eckpunkte der Restflaechen, die an den ersten Nachbarring grenzen (ohne die entfernten Flaechen)."""
+    ctx = getattr(sc, "hole_ctx", None)
+    if ctx is None:
+        return np.zeros((0, 3))
+    pid, removed = ctx
+    near = {int(pid[c[0]]) for x in rloop for c in sc.faces[x[4]].c}
+    seen, pts = set(), []
+    for i, f in enumerate(sc.faces):
+        if i in removed or not any(int(pid[c[0]]) in near for c in f.c):
+            continue
+        for c in f.c:
+            q = int(pid[c[0]])
+            if q not in near and q not in seen:
+                seen.add(q)
+                pts.append(sc.V[c[0]])
+    return np.array(pts) if pts else np.zeros((0, 3))
+
+
+def _sphere_height(a, b, w, nrim, diam, nnear=None):
     """Kugel durch Rand und ersten Nachbarring (kleinste Quadrate): die Fuellung folgt einer Kappe genau, wo ein Paraboloid sie ueberschiesst.
     a, b, w: Lage der Punkte in Durchmessern (in der Randebene und darueber); die ersten nrim Punkte sind der Rand.
     Rueckgabe: Funktion h(a, b) in Originaleinheiten oder None, wenn die Punkte keiner Kugel folgen. Laengen sind Anteile der Diagonale des Randes (bei einem Kreis rund das 1,41-fache seines Durchmessers)."""
@@ -710,13 +732,14 @@ def _sphere_height(a, b, w, nrim, diam):
         return None
     rad = math.sqrt(r2)
     dist = np.sqrt((a - ca) ** 2 + (b - cb) ** 2 + (w - cw) ** 2)
-    if float(np.sqrt(np.mean((dist - rad) ** 2))) > CURVED_FIT or rad < 0.33:
+    if float(np.sqrt(np.mean((dist - rad) ** 2))) > CURVED_SPHERE_FIT or rad < 0.33:
         return None                                              # keine Kugel, oder kleiner als eine Halbkugel ueber dem Loch
     if float(np.ptp(w[:nrim])) > CURVED_RIM_FLAT:
         return None                                              # der Rand einer Kappe liegt (fast) in einer Ebene; ein verwundener Rand ist keine Kappe
     # Die Kappe liegt auf der Seite der Randebene, von der die Nachbarflaechen wegfuehren (sie liegen auf der stehenden Kugelschale, nicht ueber dem Loch).
     # Das Vorzeichen allein aus der Lage des Randes zum Kugelmittelpunkt zu nehmen, kippt bei Kappen ueber der Halbkugel auf die falsche Schale.
-    away = float(w[:nrim].mean()) - float(w[nrim:].mean()) if len(w) > nrim else float(w[:nrim].mean()) - cw
+    nnear = nnear or len(w)                                      # Nachbarn zaehlen nur der erste Ring, nicht der zweite
+    away = float(w[:nrim].mean()) - float(w[nrim:nnear].mean()) if nnear > nrim else float(w[:nrim].mean()) - cw
     sign = 1.0 if away > 0 else -1.0
 
     def h(x, y_):
@@ -738,7 +761,7 @@ def _curved_fill(sc, rloop, Pr, cen, n):
     rel = Pr - cen
     uv = np.stack([rel @ u, rel @ v], axis=1)
     ang = np.unwrap(np.arctan2(uv[:, 1], uv[:, 0]))
-    star = bool(len(Pr) >= 6 and np.all(np.diff(ang) > 0) and float(ang[-1] - ang[0]) < 2 * math.pi)     # sonst wuerden sich Zwischenringe ueberlappen
+    star = bool(len(Pr) >= 6 and np.all(np.diff(ang) > -STAR_TOL) and float(ang[-1] - ang[0]) < 2 * math.pi + STAR_TOL)     # sonst wuerden sich Zwischenringe ueberlappen; zwei Randpunkte auf demselben Strahl (Zickzack-Rand eines Dreiecksnetzes) sind erlaubt
     if len(Pr) < 3:
         return None
     pts = [Pr]
@@ -750,11 +773,20 @@ def _curved_fill(sc, rloop, Pr, cen, n):
     w = r @ n
     if np.linalg.matrix_rank(A) < 6:
         return None
-    sph = _sphere_height(r @ u, r @ v, w, len(Pr), diam)
+    far = _second_ring(sc, rloop)                                 # ein Ellipsoid trifft Rand und ersten Ring noch wie eine Kugel, einen zweiten Ring nicht mehr
+    if len(far):
+        rf = (far - cen) / diam
+        sph = _sphere_height(np.concatenate([r @ u, rf @ u]), np.concatenate([r @ v, rf @ v]), np.concatenate([w, rf @ n]), len(Pr), diam,
+                             nnear=len(P))
+    else:
+        sph = _sphere_height(r @ u, r @ v, w, len(Pr), diam)
     if sph is not None:
         hb = np.array([sph(a, b) for a, b in uv])
         rise = abs(float(sph(0.0, 0.0)) - float(hb.mean()))
-        if CURVED_MIN * diam <= rise <= CURVED_SPHERE_MAX_RISE * diam:
+        if rise > CURVED_SPHERE_MAX_RISE * diam:
+            fail("Das Loch liegt auf einer Kugel und ist groesser als eine Halbkugel; eine Fuellung waere geraten. "
+                 "Ein kleineres Element waehlen oder die Kappe mit split abtrennen.")
+        if CURVED_MIN * diam <= rise:
             return {"u": u, "v": v, "uv": uv, "h": sph, "hb": hb, "star": star}
     coef, *_ = np.linalg.lstsq(A, w, rcond=None)
     if float(np.sqrt(np.mean((A @ coef - w) ** 2))) > CURVED_FIT:
@@ -846,7 +878,8 @@ def close_holes(sc, pid, removed):
     """Schliesst die Loecher, die das Entfernen hinterlaesst. Rueckgabe: (neue Flaechen, Anzahl geschlossener Loecher,
     Anzahl der Loecher mit nicht ebenem Rand, die flach gefuellt wurden)."""
     loops = _hole_loops(sc, pid, removed)
-    new, closed, uneven = [], 0, 0
+    new, closed, uneven, bent = [], 0, 0, 0
+    sc.hole_ctx = (pid, set(removed))
     for loop in loops:
         rloop = loop[::-1]                                        # Umlaufrichtung der neuen Flaechen ist die Gegenrichtung
         rloop = _unwrap_uv_seam(sc, rloop)
@@ -866,6 +899,9 @@ def close_holes(sc, pid, removed):
             n = n / nl
             curved = _curved_fill(sc, rloop, Pr, cen, n)
             flat = float(np.abs((Pr - cen) @ n).max()) <= HOLE_PLANAR * diam
+            if curved is None or not curved["star"]:             # keine Woelbung gefunden: die Fuellung wird flach, und das Volumen schrumpft, wenn die Umgebung gewoelbt ist
+                ring = np.vstack([sc.V[[c[0] for c in sc.faces[x[4]].c]] for x in rloop])
+                bent += int(float(np.abs((ring - cen) @ n).max()) > BENT_RING * diam)
             tris = _projected_ear_clip(Pr, cen, n)                  # in der Randebene triangulieren, auch bei gewoelbtem oder konkavem Rand
             fan_ok = _fan_is_consistent(Pr, cen, n)
             if tris is not None and fan_ok:                         # Pruefer: Ohrenschnitt gegen Faecher vom Mittelpunkt
@@ -901,6 +937,7 @@ def close_holes(sc, pid, removed):
                 vn = sc.add_vn(tn / tl) if (has_n and tl > 0) else -1
                 new.append(Face([(a_[1], a_[2], vn), (b_[1], b_[2], vn), (ci, cvt, vn)], ref.mat, ref.obj, ref.grp, ""))
         closed += 1
+    sc.bent_holes = bent
     return new, closed, uneven
 
 
@@ -1384,6 +1421,8 @@ def edit_scene(sc, region, mode, shape="auto", axis="auto", scale=1.0, material=
         prim_note = "%s (%s)" % ({"box": "Quader", "sphere": "Kugel", "cylinder": "Zylinder"}[kind], "xyz"[ax] if kind == "cylinder" else "ohne Achse")
     if uneven:
         hints.append("%d Loch/Loecher mit nicht ebenem Rand wurden flach gefuellt (Ohrenschnitt aus Randpunkten): die Fuellung folgt der Woelbung der Umgebung nicht." % uneven)
+    if getattr(out, "bent_holes", 0):
+        hints.append("%d Loch/Loecher liegen in einer gewoelbten Umgebung, fuer die keine passende Woelbung gefunden wurde (keine Kugel): sie wurden flach gefuellt, das Volumen schrumpft." % out.bent_holes)
     if prim is not None and prim[4] and prim[4] not in {f.mat for f in sc.faces}:
         shown_m = _plain(prim[4]) if sc.escaped else prim[4]
         hints.append("Das Material '%s' kommt in der Datei sonst nicht vor (Tippfehler?): es muss in der .mtl stehen, sonst bleibt der Ersatz ohne Material." % shown_m[:40])
