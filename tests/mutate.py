@@ -317,6 +317,14 @@ MUTANTS = [
     ('r15 edit: verwundener Rand als Kappe', 'np.ptp(w[:nrim])) > CURVED_RIM_FLAT', 'np.ptp(w[:nrim])) > 1e9', 'kkmeshcut_edit.py'),
     ('r15 edit: Beruehrungsecke nicht getrennt', '            if nv in at:', '            if nv == e0[0]:', 'kkmeshcut_edit.py'),
     ('r15 edit: Schreibweise zaehlt nicht', 'hit = exact if len(exact) == 1 else hit', 'hit = hit', 'kkmeshcut_edit.py'),
+    ('r16 serve: GET mit Body angenommen', 'if self._bad_framing() or int(self.headers.get("Content-Length", "0") or 0) > 0:', 'if False:', 'kkmeshcut_serve.py'),
+    ('r16 serve: Content-Length lax', 'r"[0-9]+"', 'r".+"', 'kkmeshcut_serve.py'),
+    ('r16 serve: doppelte Content-Length', 'len(lens) > 1 or ', '', 'kkmeshcut_serve.py'),
+    ('r16 serve: unbekannte Argumente still', '    if unknown:', '    if False:', 'kkmeshcut_serve.py'),
+    ('r16 serve: NaN im JSON', 'if isinstance(obj, float) and not math.isfinite(obj):', 'if False:', 'kkmeshcut_serve.py'),
+    ('r16 serve: parts 0 erlaubt', 'not 2 <= parts <= 1024', 'False', 'kkmeshcut_serve.py'),
+    ('r16 edit: Material-Tippfehler ohne Hinweis', 'prim[4] and prim[4] not in {f.mat for f in sc.faces}', 'False', 'kkmeshcut_edit.py'),
+    ('r16 edit: 500er-Grenze verschwiegen', 'if om else ""', 'if False else ""', 'kkmeshcut_edit.py'),
 ]
 
 

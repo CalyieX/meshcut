@@ -10,7 +10,9 @@ MESHCUT_TOKEN (Bearer-Schluessel aus der Umgebung) auch an andere Adressen.
 """
 import hmac
 import json
+import math
 import os
+import re
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -55,9 +57,11 @@ def _scrub(tools, text):
 
 
 def _scrub_obj(tools, obj):
-    """Auch Erfolgsantworten (z. B. 'Geschrieben: <Pfad>') nennen den Wurzelordner nicht."""
+    """Auch Erfolgsantworten (z. B. 'Geschrieben: <Pfad>') nennen den Wurzelordner nicht; NaN und Unendlich (kein gueltiges JSON) werden zu null."""
     if isinstance(obj, str):
         return _scrub(tools, obj)
+    if isinstance(obj, float) and not math.isfinite(obj):
+        return None
     if isinstance(obj, list):
         return [_scrub_obj(tools, x) for x in obj]
     if isinstance(obj, dict):
@@ -117,6 +121,9 @@ class Tools:
 
     def segment(self, a):
         import kkmeshcut_ai as ai
+        parts = _opt(a, "parts", "int")
+        if (_opt(a, "backend", "str") or "kmeans") == "kmeans" and parts is not None and not 2 <= parts <= 1024:
+            raise MeshcutError("parts: 2 bis 1024 Teile (kmeans).")
         src, out = self.sb.path(a.get("input"), "input"), self.sb.path(a.get("outdir"), "outdir")
         return _summary(ai.segment_file(src, out, backend=_opt(a, "backend", "str") or "kmeans", parts=_opt(a, "parts", "int"),
                                         names=_opt(a, "names", "strlist"), prompt=_opt(a, "prompt", "str"),
@@ -207,6 +214,10 @@ def call_tool(tools, name, args):
         raise MeshcutError("Unbekanntes Werkzeug '%s'." % name)
     if not isinstance(args, dict):
         raise MeshcutError("Die Argumente muessen ein JSON-Objekt sein.")
+    known = next(s for s in tool_specs() if s["name"] == name)["inputSchema"]["properties"]
+    unknown = [k for k in args if k not in known]
+    if unknown:                                                  # ein Tippfehler wie 'nocap' wuerde sonst still ignoriert
+        raise MeshcutError("Unbekanntes Argument '%s' bei %s - moeglich: %s." % (str(unknown[0])[:30], name, ", ".join(sorted(known))))
     with LOCK:
         return _scrub_obj(tools, getattr(tools, name)(args))
 
@@ -309,7 +320,14 @@ def make_handler(tools, token, timeout=30):
             got = self.headers.get("Authorization", "")
             return got.startswith("Bearer ") and hmac.compare_digest(got[7:].encode(), token.encode())
 
+        def _bad_framing(self):
+            """Content-Length nur als Dezimalzahl und hoechstens einmal; kein Transfer-Encoding. Sonst waere die Grenze zwischen zwei Anfragen auf einer Verbindung unklar."""
+            lens = self.headers.get_all("Content-Length") or []
+            return len(lens) > 1 or any(not re.fullmatch(r"[0-9]+", x.strip()) for x in lens) or bool(self.headers.get("Transfer-Encoding"))
+
         def do_GET(self):
+            if self._bad_framing() or int(self.headers.get("Content-Length", "0") or 0) > 0:      # ein GET braucht keinen Body; ungelesen bliebe er als naechste Anfrage stehen
+                return self._send(400, {"error": "Ungueltige Anfrage (Content-Length oder Body bei GET)."})
             if not self._authorized():
                 return self._send(401, {"error": "Schluessel fehlt oder falsch."})
             if self.path == "/v1/health":
@@ -325,14 +343,11 @@ def make_handler(tools, token, timeout=30):
                 return self._send(404, {"error": "Unbekannter Pfad."})
             if self.headers.get("Content-Type", "").split(";")[0].strip().lower() != "application/json":
                 return self._send(415, {"error": "Content-Type: application/json noetig."})     # kein 'einfacher' Browser-Post (CSRF)
-            try:
-                n = int(self.headers.get("Content-Length", "0"))
-            except ValueError:
-                n = -1
-            if n < 0 or n > MAX_BODY:
-                return self._send(413, {"error": "Anfrage zu gross (hoechstens %d Byte)." % MAX_BODY})
             if self.headers.get("Transfer-Encoding"):
                 return self._send(411, {"error": "Content-Length noetig (kein chunked)."})
+            n = -1 if self._bad_framing() else int(self.headers.get("Content-Length", "0"))
+            if n < 0 or n > MAX_BODY:
+                return self._send(413, {"error": "Anfrage zu gross (hoechstens %d Byte)." % MAX_BODY})
             try:
                 args = json.loads(self.rfile.read(n).decode("utf-8") or "{}")
             except Exception:                                    # ValueError, UnicodeDecodeError, RecursionError

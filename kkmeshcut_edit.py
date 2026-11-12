@@ -622,7 +622,7 @@ def choose_region(sc, regions, region=None, at=None, name=None):
             names = []
             for r in regions:
                 names += [r["name"]] + [a["name"] for a in r["also"]]
-            fail("Kein Element heisst '%s' - vorhanden: %s" % (str(name)[:40], ", ".join(names[:15])))
+            fail("Kein Element heisst '%s' - vorhanden: %s%s" % (str(name)[:40], ", ".join(names[:15]), _omitted_note()))
         if len(hit) > 1:                                          # Namen, die sich nur in der Gross-/Kleinschreibung unterscheiden: die genaue Schreibweise gewinnt
             exact = [r for r in hit if r["name"] == str(name).strip(" 	") or any(a["name"] == str(name).strip(" 	") for a in r["also"])]
             hit = exact if len(exact) == 1 else hit
@@ -633,8 +633,13 @@ def choose_region(sc, regions, region=None, at=None, name=None):
     fi, dist = nearest_face(sc, p)
     cand = [r for r in regions if fi in set(r["face_ids"])]
     if not cand:
-        fail("Am Punkt %s liegt kein auswaehlbares Element." % str(at)[:30])
+        fail("Am Punkt %s liegt kein auswaehlbares Element.%s" % (str(at)[:30], _omitted_note()))
     return min(cand, key=lambda r: (r["faces"], r["id"]))
+
+
+def _omitted_note():
+    om = getattr(find_regions, "omitted", 0)
+    return " (%d kleinere Elemente sind nicht nummeriert, hoechstens %d - ein kleineres Netz waehlen oder vorher mit split teilen)" % (om, MAX_REGIONS) if om else ""
 
 
 # ============================================================================= Loch schliessen
@@ -1379,6 +1384,9 @@ def edit_scene(sc, region, mode, shape="auto", axis="auto", scale=1.0, material=
         prim_note = "%s (%s)" % ({"box": "Quader", "sphere": "Kugel", "cylinder": "Zylinder"}[kind], "xyz"[ax] if kind == "cylinder" else "ohne Achse")
     if uneven:
         hints.append("%d Loch/Loecher mit nicht ebenem Rand wurden flach gefuellt (Ohrenschnitt aus Randpunkten): die Fuellung folgt der Woelbung der Umgebung nicht." % uneven)
+    if prim is not None and prim[4] and prim[4] not in {f.mat for f in sc.faces}:
+        shown_m = _plain(prim[4]) if sc.escaped else prim[4]
+        hints.append("Das Material '%s' kommt in der Datei sonst nicht vor (Tippfehler?): es muss in der .mtl stehen, sonst bleibt der Ersatz ohne Material." % shown_m[:40])
     if ranking and ranking[0][0] > BAD_SHAPE:
         hints.append("Kein Kandidat passt gut (beste Abweichung %.2f der Diagonale): der Ersatz ist nur eine grobe Naeherung." % ranking[0][0])
     out.faces = [sc.faces[i] for i in kept] + new_faces

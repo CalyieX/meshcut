@@ -1770,3 +1770,82 @@ def test_http_survives_a_lone_surrogate_in_the_answer(tmp_path):
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+# ============================================================================= Spock R14
+def _raw_http(tmp_path, request):
+    import socket
+    import threading
+    import kkmeshcut_serve as serve
+    srv = serve.make_http_server(serve.Tools(serve.Sandbox(tmp_path)), 0)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        s = socket.create_connection(("127.0.0.1", srv.server_address[1]), timeout=5)
+        s.sendall(request)
+        data = b""
+        while True:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        s.close()
+        return data
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_get_with_a_body_is_refused_and_not_run_as_a_second_request(tmp_path):
+    inner = b"GET /v1/health HTTP/1.1\r\nHost: localhost\r\n\r\n"
+    outer = b"GET /v1/health HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: %d\r\n\r\n" % len(inner) + inner
+    data = _raw_http(tmp_path, outer)
+    assert data.count(b"HTTP/1.1") == 1 and b" 400 " in data.split(b"\r\n")[0]
+
+
+@pytest.mark.parametrize("length", [b"1_6", b"+16", b"0x10", b"16, 16"])
+def test_content_length_must_be_a_plain_decimal(tmp_path, length):
+    req = b"POST /v1/info HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: " + length + b"\r\n\r\n{\"path\": \"a.obj\"}"
+    data = _raw_http(tmp_path, req)
+    assert b" 413 " in data.split(b"\r\n")[0] or b" 400 " in data.split(b"\r\n")[0]
+
+
+def test_two_content_length_headers_are_refused(tmp_path):
+    req = b"POST /v1/info HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 2\r\nContent-Length: 20\r\n\r\n{}"
+    data = _raw_http(tmp_path, req)
+    assert b" 413 " in data.split(b"\r\n")[0]
+
+
+def test_non_finite_numbers_become_null_not_invalid_json(tmp_path):
+    import kkmeshcut_serve as serve
+    tools = serve.Tools(serve.Sandbox(tmp_path))
+    tools.info = lambda a: {"volume": float("nan"), "area": float("inf"), "n": 3}
+    got = serve.call_tool(tools, "info", {})
+    assert got == {"volume": None, "area": None, "n": 3}
+
+
+def test_unknown_argument_is_refused_instead_of_ignored(tmp_path):
+    import kkmeshcut_serve as serve
+    tools = serve.Tools(serve.Sandbox(tmp_path))
+    with pytest.raises(mc.MeshcutError, match="nocap"):
+        serve.call_tool(tools, "split", {"input": "a.stl", "outdir": "o", "nocap": True})
+
+
+def test_segment_refuses_zero_parts_like_the_command_line(tmp_path):
+    import kkmeshcut_serve as serve
+    tools = serve.Tools(serve.Sandbox(tmp_path))
+    with pytest.raises(mc.MeshcutError, match="parts"):
+        serve.call_tool(tools, "segment", {"input": "a.stl", "outdir": "o", "parts": 0})
+
+
+def test_unknown_swap_material_gets_a_hint(tmp_path):
+    p = scene_obj(tmp_path)
+    out = tmp_path / "o.obj"
+    r = mc.swap(p, region=2, out=out, material="otehr")
+    assert "otehr" in r["text"] and "Tippfehler" in r["text"]
+
+
+def test_name_not_found_mentions_the_region_limit(tmp_path, monkeypatch):
+    p = scene_obj(tmp_path)
+    monkeypatch.setattr(ed, "MAX_REGIONS", 1)
+    with pytest.raises(mc.MeshcutError, match="nicht nummeriert"):
+        mc.remove(p, name="gibt-es-nicht", out=tmp_path / "o.obj")
