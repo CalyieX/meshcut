@@ -32,7 +32,7 @@ MUTANTS = [
     ("join ohne Vollstaendigkeitspruefung", "if len(S) != nfaces or not (S == np.arange(nfaces)).all():", "if False:"),
     ("join Deckel behalten", "tri_list.append(V[F[:nonc]])", "tri_list.append(V[F]); src = np.concatenate([src, -np.ones(ncap, np.int64)])"),
     ("join Dateiveraenderung nicht erkannt", "if len(F) != meta[\"faces\"]:", "if False:"),
-    ("verify volumen ohne Pruefung", "add(\"volumen\", abs(vol_sum - sv) <= rel_v * max(abs(sv), diag * sa * 1e-3, 1e-300),", "add(\"volumen\", True,"),
+    ("verify volumen ohne Pruefung", "add(\"volumen\", abs(vol_sum - sv) <= rel_v * max(abs(sv), diag * sa * 1e-6, 1e-300),", "add(\"volumen\", True,"),
     ("verify hash ohne Pruefung", "add(\"hash\", jh == side[\"source\"][\"hash\"],", "add(\"hash\", True,"),
     ("wasserdicht nicht geprueft", "add(\"wasserdicht\", all_tight or not has_cap,", "add(\"wasserdicht\", True,"),
     ("offene Kanten nicht gezaehlt", "open_ = int((~has_rev).sum())", "open_ = 0"),
@@ -357,6 +357,9 @@ MUTANTS = [
     ('r29 core: verify ohne float32-Korn', 'rel_v, rel_a = max(rel_v, grain), max(rel_a, grain)', 'pass', 'kkmeshcut.py'),
     ('r29 core: API ohne warnings', 'side["warnings"] = [ln[len("Hinweis: "):] for ln in text.splitlines() if ln.startswith("Hinweis: ")]', 'side["warnings"] = []', 'kkmeshcut.py'),
     ('r29 serve: Zusammenfassung ohne warnings', ', "warnings": list(side.get("warnings", []))}', '}', 'kkmeshcut_serve.py'),
+    ('r30 core: verify-Korn zu locker', 'grain = 3 * float(np.finfo(np.float32).eps)', 'grain = 300 * float(np.finfo(np.float32).eps)', 'kkmeshcut.py'),
+    ('r30 core: Volumenboden zu hoch', 'max(abs(sv), diag * sa * 1e-6, 1e-300)', 'max(abs(sv), diag * sa * 1e-3, 1e-300)', 'kkmeshcut.py'),
+    ('r30 core: flip ohne Hinweis', 'say("Hinweis: --flip dreht die Dreiecke vor dem Teilen.', 'pass  # say("Hinweis: --flip dreht die Dreiecke vor dem Teilen.', 'kkmeshcut.py'),
     ('r21 edit: Volumen falsch gerechnet', 'float(np.einsum("ij,ij->", V[tri[:, 0]], np.cross(V[tri[:, 1]], V[tri[:, 2]]))) / 6.0', 'float(np.einsum("ij,ij->", V[tri[:, 0]], np.cross(V[tri[:, 1]], V[tri[:, 2]]))) / 3.0', 'kkmeshcut_edit.py'),
 ]
 

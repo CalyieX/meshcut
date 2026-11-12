@@ -2182,3 +2182,48 @@ def test_verify_tolerates_the_float32_step_of_a_far_source(tmp_path):
     src = _rotated_far_cube(tmp_path)
     mc.split(src, tmp_path / "o", plane=["1,0,0,100000.0001"])
     assert mc.verify_folder(tmp_path / "o", source=src)["ok"]
+
+
+# ============================================================================= Spock R27
+def _forge_sidecar(folder, key, factor):
+    p = folder / "meshcut.json"
+    side = json.loads(p.read_text(encoding="utf-8"))
+    side["source"][key] = side["source"][key] * factor
+    p.write_text(json.dumps(side), encoding="utf-8")
+
+
+@pytest.mark.parametrize("offset", [0.0, 1e3])
+@pytest.mark.parametrize("key", ["volume", "area"])
+def test_verify_sees_a_one_percent_forged_source_figure(tmp_path, offset, key):
+    """Spock R27: die verify-Toleranz war 8-mal zu locker; ein um 1 Prozent gefaelschter Sidecar-Wert fiel bei grobem Offset nicht auf."""
+    m = shapes.cube(2.0, lo=(0, 0, 0), sub=2)
+    src = tmp_path / "c.obj"
+    src.write_bytes(mc.mesh_bytes("obj", m.V + offset, m.F, "c"))
+    mc.split(src, tmp_path / "o", plane=["x=%r" % (1.0 + offset)])
+    assert mc.verify_folder(tmp_path / "o", source=src)["ok"]
+    _forge_sidecar(tmp_path / "o", key, 1.01)
+    assert not mc.verify_folder(tmp_path / "o", source=src)["ok"]
+
+
+def test_verify_sees_a_one_percent_volume_error_of_a_thin_plate(tmp_path):
+    """Spock R27: der Boden diag*area*1e-3 verschluckte bei duennen Platten 1 Prozent Volumen."""
+    m = shapes.cube(1.0, lo=(0, 0, 0), sub=2)
+    V = m.V * np.array([100.0, 100.0, 0.001])
+    src = tmp_path / "p.obj"
+    src.write_bytes(mc.mesh_bytes("obj", V, m.F, "p"))
+    mc.split(src, tmp_path / "o", plane=["x=50"])
+    assert mc.verify_folder(tmp_path / "o", source=src)["ok"]
+    _forge_sidecar(tmp_path / "o", "volume", 1.01)
+    assert not mc.verify_folder(tmp_path / "o", source=src)["ok"]
+
+
+def test_flip_says_that_the_proof_refers_to_the_flipped_mesh(tmp_path, capsys):
+    m = shapes.cube(2.0, lo=(0, 0, 0), sub=2)
+    src = tmp_path / "c.stl"
+    src.write_bytes(mc.mesh_bytes("stl", m.V, m.F, "c"))
+    try:
+        mc.main(["split", str(src), str(tmp_path / "o"), "--plane", "x=1", "--flip"])
+    except SystemExit:                                                    # ein nach innen gedrehter Wuerfel wird danach eventuell abgelehnt; der Hinweis kommt vorher
+        pass
+    cap = capsys.readouterr()
+    assert "--flip dreht" in cap.out + cap.err

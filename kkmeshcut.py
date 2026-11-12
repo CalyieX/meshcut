@@ -2162,7 +2162,7 @@ def verify_folder(folder, source=None):
         allv0 = np.concatenate([V for _, V, _ in parts])
         ext0 = float((allv0.max(axis=0) - allv0.min(axis=0)).max()) if len(allv0) else 0.0
         if ext0 > 0:
-            grain = 8 * float(np.finfo(np.float32).eps) * float(np.abs(allv0).max()) / ext0
+            grain = 3 * float(np.finfo(np.float32).eps) * float(np.abs(allv0).max()) / ext0
             rel_v, rel_a = max(rel_v, grain), max(rel_a, grain)
     # 0. die Teile selbst: jede Datei muss genau das enthalten, was split geschrieben hat (Fragmente und Deckel eingeschlossen)
     bad = []
@@ -2209,7 +2209,7 @@ def verify_folder(folder, source=None):
         add("wasserdicht", all_tight or not has_cap, "jedes Teil wasserdicht" if all_tight else skipped + "; ".join(notes))
         add("euler", all_even or not has_cap, "Euler-Zahl je Teil gerade" if all_even else skipped + "; ".join(notes))
         if has_cap:
-            add("volumen", abs(vol_sum - sv) <= rel_v * max(abs(sv), diag * sa * 1e-3, 1e-300),
+            add("volumen", abs(vol_sum - sv) <= rel_v * max(abs(sv), diag * sa * 1e-6, 1e-300),
                 "Summe der Teile %.12g, Original %.12g" % (vol_sum, sv))
         add("flaeche", abs(area_sum - sa) <= rel_a * max(sa, 1e-300), "Flaeche ohne Deckel %.9g, Original %.9g" % (area_sum, sa))
     # 3. naeherungsweises Zusammensetzen ohne Begleitdatei + Hausdorff gegen die Quelle
@@ -2285,6 +2285,7 @@ def cmd_split(a):
     mesh = load_mesh(a.input)
     if a.flip:
         mesh = Mesh(mesh.V, mesh.F[:, [0, 2, 1]], mesh.name)
+        say("Hinweis: --flip dreht die Dreiecke vor dem Teilen. meshcut.json und `join` beziehen sich auf das gedrehte Netz; `verify --source` gegen die Originaldatei meldet darum Abweichungen bei Quelle und Reihenfolge.")
     modes = [bool(a.plane), bool(a.grid), bool(a.max), bool(a.wedges), bool(a.labels)]
     if sum(modes) != 1:
         fail("Genau eine Art zu zerlegen angeben: --plane, --grid, --max, --wedges oder --labels.")
