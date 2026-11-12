@@ -334,6 +334,8 @@ MUTANTS = [
     ('r18 edit: gewoelbte Umgebung ohne Hinweis', 'bent += int(', 'bent += 0 * int(', 'kkmeshcut_edit.py'),
     ('r19 edit: Kugel trifft den Rand nicht', 'or off_rim > CURVED_RIM_MISS * diam:', ':', 'kkmeshcut_edit.py'),
     ('r19 edit: negatives Volumen durchgelassen', 'if _single_closed_solid(src_scene) and _scene_volume(src_scene) > 0 >= _scene_volume(back):', 'if False:', 'kkmeshcut_edit.py'),
+    ('r20 edit: Volumenaenderung verschwiegen', 'if v0 > 0 and abs(v1 - v0) > VOLUME_NOTE * v0:', 'if False:', 'kkmeshcut_edit.py'),
+    ('r20 edit: Volumenhinweis immer', 'abs(v1 - v0) > VOLUME_NOTE * v0:', 'abs(v1 - v0) > -1.0 * v0:', 'kkmeshcut_edit.py'),
 ]
 
 

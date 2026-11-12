@@ -32,6 +32,7 @@ SCALE_RANGE = (0.01, 100.0)                                      # --scale: daru
 SIZE_RANGE = (64, 4096)                                          # --size des Uebersichtsbildes in Pixeln                                    # mehr Dreiecke werden fuers Bild gleichmaessig ausgeduennt
 CURVED_SPHERE_MAX_RISE = 0.37                                    # Anteil der Diagonale des Randes: eine Halbkugel hat die Hoehe R bei einer Diagonale von rund 2,83 R (0.354), dazu Spielraum fuer den gezackten Rand
 STAR_TOL = 1e-9                                                  # Rundungsspielraum der Winkelreihenfolge des Randes (Bogenmass)
+VOLUME_NOTE = 0.1                                                # eine Volumenaenderung ueber diesem Anteil wird im Bericht genannt
 CURVED_RIM_MISS = 0.05                                           # Hoehenfunktion der Kugel darf den Rand hoechstens so weit verfehlen (Anteil der Diagonale)
 CURVED_SPHERE_FIT = 0.0002                                       # Kugelfit: Abweichung von Rand und erstem Ring (Anteil der Diagonale); ein Ellipsoid trifft eine Kugel nur grob und bekommt keine
 BENT_RING = 0.003                                                # liegt der erste Nachbarring weiter als dies (Anteil der Diagonale) neben der Randebene, ist die Umgebung gewoelbt
@@ -1460,6 +1461,10 @@ def edit_scene(sc, region, mode, shape="auto", axis="auto", scale=1.0, material=
     if ranking and ranking[0][0] > BAD_SHAPE:
         hints.append("Kein Kandidat passt gut (beste Abweichung %.2f der Diagonale): der Ersatz ist nur eine grobe Naeherung." % ranking[0][0])
     out.faces = [sc.faces[i] for i in kept] + new_faces
+    if _single_closed_solid(sc):                                  # ein Koerper: die Volumenaenderung wird immer genannt, damit eine zu flache oder zu hohe Fuellung nie still bleibt
+        v0, v1 = _scene_volume(sc), _scene_volume(out)
+        if v0 > 0 and abs(v1 - v0) > VOLUME_NOTE * v0:
+            hints.append("Das Volumen aendert sich um %+.0f %% (%.4g -> %.4g). Bei einem entfernten Teil ist das zu erwarten; sitzt das Loch in einer Woelbung, kann die Fuellung zu flach oder zu hoch sein." % (100.0 * (v1 - v0) / v0, v0, v1))
     open_after = _boundary_edges(out, position_ids(out))
     report = {"entfernt": len(removed), "entfernte_dreiecke": int(sc.n_triangles(removed)), "neu": len(new_faces),
               "neue_dreiecke": int(sum(len(f.c) - 2 for f in new_faces)), "loecher_geschlossen": holes,

@@ -1959,3 +1959,17 @@ def test_a_result_without_positive_volume_is_refused_by_the_self_check():
     ed._check_orientation(pos, pos, "x.obj")
     with pytest.raises(mc.MeshcutError, match="positives Volumen"):
         ed._check_orientation(pos, neg, "x.obj")
+
+
+# ============================================================================= Spock R18
+def test_a_volume_change_over_ten_percent_is_always_reported_with_the_number(tmp_path):
+    """Spock R18: schraege Kappen auf Ellipsoiden wurden mit -56 Prozent Volumen gefuellt, ohne dass der Bericht es erwaehnte."""
+    p, v0 = _scaled_sphere_obj(tmp_path, (1, 0.6, 0.3), 0.2)
+    r = mc.remove(p, name="red", out=tmp_path / "o.obj")
+    assert "Das Volumen aendert sich um -" in r["text"]
+
+
+def test_a_volume_change_under_ten_percent_is_not_noise(tmp_path):
+    p, v0 = _scaled_sphere_obj(tmp_path, (1, 1, 1), 0.9)
+    r = mc.remove(p, name="red", out=tmp_path / "o.obj")
+    assert "Das Volumen aendert sich" not in r["text"]
