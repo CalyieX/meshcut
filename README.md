@@ -73,6 +73,7 @@ OK     hausdorff   Hausdorff (Eckpunkte, ohne Begleitdatei zusammengesetzt) 0, e
 | `meshcut verify ORDNER [--source ORIGINAL]` | prüft den Rundlauf der gespeicherten Dateien |
 | `meshcut segment EIN AUSORDNER [--parts N] [--names a,b,c] [--prompt "…"] [--backend …]` | findet Teile automatisch (und benennt sie), schreibt sie als Zuordnungskarte, prüft den Rundlauf |
 | `meshcut regions EIN AUSORDNER` | nummeriert die Elemente (Teile, Objekte, Gruppen, Materialien): `regions.png` mit Nummern, `regions.json` mit Punkt, Rahmen, Fläche, Material |
+| `meshcut edit EIN "entferne den Höcker"` | **ein Satz genügt**: meshcut versteht entfernen/ersetzen, wählt Element, Form und alles Weitere selbst und endet mit einem Urteil (siehe unten) |
 | `meshcut remove EIN --region N` | entfernt ein Element, schließt das Loch sauber (Material, UV, Normalen der Umgebung), schreibt `EIN_edit.obj` |
 | `meshcut swap EIN --region N [--shape box\|sphere\|cylinder]` | ersetzt ein Element durch einen Grundkörper gleicher Größe, mit dem Material des Originals |
 | `meshcut tools` | alle Befehle als Tool-Definition (JSON-Schema) für KI-Assistenten, aus dem Parser erzeugt |
@@ -153,6 +154,33 @@ curl -s -H "Authorization: Bearer geheim" -H "Content-Type: application/json" \
   -d '{"input":"figur.stl","outdir":"teile","parts":3}' http://127.0.0.1:8765/v1/segment
 ```
 
+## Ein Satz, ein Urteil
+
+```text
+$ meshcut edit kugel.obj "entferne das rote Teil"
+Verstanden: entfernen, Element nach der Beschreibung 'rote'.
+Entfernt: Region 2 (bump, 72 Dreiecke) entfernt.
+Loch geschlossen (1 Rand), Material und UV der Umgebung uebernommen.
+Pruefung (aus der geschriebenen Datei): von 2592 Dreiecken 72 entfernt, 120 neu dazugekommen; die uebrigen 2520 sind unveraendert (Eckpunkt, UV, Normale, Material verglichen).
+Geschrieben: kugel_edit.obj
+Knick am Fuellrand (am Ergebnis gemessen): im Mittel 7.5 Grad, hoechstens 11.3 Grad an 24 Randkanten.
+verdict: ok
+```
+
+Beim Bearbeiten (`edit`, `remove`, `swap`) gilt: Der Nutzer sagt, was passieren soll; meshcut wählt Element, Form und Füllung selbst, prüft das Ergebnis **am fertigen Ergebnis** und sagt in der letzten Zeile ehrlich, ob es sich darauf verlassen würde:
+
+| Zeile | Bedeutung | Exit-Code |
+|---|---|---|
+| `verdict: ok` | Loch zu, kein sichtbarer Knick am Rand, nichts Auffälliges | 0 |
+| `verdict: unsicher - <Grund>` | Datei ist geschrieben, aber meshcut würde hinschauen (Grund in Klartext) | 0 |
+| `verdict: nicht ok - <Grund>` | Datei ist geschrieben, aber ein Fehler ist sicher (z. B. das Loch ist nicht ganz zu, die Fläche knickt stark ab) | **2** |
+
+`--json` gibt dasselbe als ein Objekt aus (`verdict`, `grund`, `knick_mittel_grad`, `offene_kanten_nachher`, ...). Die Python-Funktionen und der Dienst liefern `verdict` und `reason` mit; ein „nicht ok“ ist dort ein Ergebnis, kein Ausnahmefehler. Das Element wählt man mit `--region N`, `--name NAME` oder `--was "das rote Teil"` / `"das größte"` / `"Teil 7"` (Name auch als Teilwort, Material, deutsche Farbwörter). Die Schwellen stehen in [`bench/OK_SCHWELLEN.md`](bench/OK_SCHWELLEN.md) und wurden vor dem ersten Messlauf festgelegt; Nachträge sind dort mit Datum und Grund eingetragen.
+
+Das Urteil ist „unsicher“, wenn eine dieser Grenzen berührt wird (je Grenze ein Test): Knick am Füllrand über 25° im Mittel (über 60°: „nicht ok“) · Volumen über 20 % anders · entfernte Fläche über 30 % des Modells (Inhalt müsste erfunden werden) · zwei oder mehr getrennte Löcher · flache Füllung auf Wölbung · Loch ab 2 % der Oberfläche in gewölbter Umgebung (Mitte geschätzt) · keine Grundform passt (`swap`) · Material-Tippfehler · Farben/Material/UV gehen im Zielformat verloren (alles außer OBJ) · Kanten mit mehr als zwei Flächen (nicht mannigfaltig). Neue offene Kanten sind immer „nicht ok“.
+
+**Wie gut ist das auf echten Modellen?** `bench/real_bench.py` stanzt aus 11 frei verfügbaren Fremdmodellen (alecjacobson/common-3d-test-models) je einen Fleck von 1, 3 und 6 % der Dreiecke und vergleicht mit dem Original (Abweichung ≤ 2 % der Diagonale, mittlerer Normalenwinkel ≤ 30°). Stand 17.11.2026, 33 Fälle: **30 % „ok“ und wirklich gut (95 %-Intervall 17–47 %) bei 0 verschwiegenen Fehlern; 33 von 33 bestanden (gut oder gemeldet; Intervall 90–100 %).** Das Ziel von 85 % „ok“ ist **nicht erreicht**: meshcut meldet bei gewölbten Modellen lieber „unsicher“, als still etwas Geschätztes als gut auszugeben. Der Weg dorthin (alter Füller: 27 % ok, 3 verschwiegene Fehler; glatter Füller ohne neue Regel: 7 verschwiegene) steht in `bench/REAL_RESULTS*.md`. Die Regel „Loch ab 2 % in gewölbter Umgebung“ stammt aus diesen Messwerten (an 6 Modellen angepasst, an 5 anderen geprüft); sie ist im Nachtrag von `bench/OK_SCHWELLEN.md` offen ausgewiesen.
+
 ## Was genau garantiert wird
 
 Zwei Stufen, die man nicht vermischen darf:
@@ -213,6 +241,7 @@ Die Schnittstelle führt dieselben Befehle aus wie die Kommandozeile (gleiche Op
 - **Stifte und Passungen** (Dübel, Zapfen/Loch mit Spiel) gibt es in v0.1 noch nicht, ebenso keine Bearbeitung mehrerer Objekte einer Datei auf einmal (3MF/GLB mit mehreren Objekten werden als ein Netz gelesen). manifold3d wird nur in den Tests als unabhängige Gegenprobe benutzt (Volumen der Teile gegen `split_by_plane`), nicht zur Laufzeit.
 - **Triangulierung der Deckel** ist gültig und deckungsgleich, aber nicht „schön“: Ohrenschnitt erzeugt gern lange schmale Dreiecke. Für den Druck unkritisch, für Simulation ungeeignet. Läuft der Ohrenschnitt in einen Notfall (Punkte exakt aufeinander), meldet `split` das.
 - **Bearbeiten (`remove`/`swap`) – bekannte Lücken:** Texturen in Unterordnern werden bei `--out` in einen anderen Ordner nicht mitkopiert (nur die `.mtl`); OBJ-Eingaben in UTF-16 oder mit Zeilenfortsetzung `\` werden abgelehnt; Vertexfarben (`v x y z r g b`) bekommen für neue Eckpunkte keine Farbe; eine Füllung, die weder einer Kugel noch einem flachen Paraboloid folgt (z. B. eine hohe Spitze), bleibt flach und verkleinert das Volumen ohne eigenen Hinweis; sehr große Netze (100 000+ Dreiecke) brauchen Sekunden, weil die Bearbeitung Python-Schleifen nutzt; Koordinaten jenseits von etwa 1e76 bricht `remove` mit einer Meldung zum Zahlenbereich ab.
+- **Löcher mit mindestens 12 Randpunkten und nicht ebenem Rand** (oder in gewölbter Umgebung) füllt `remove`/`swap` seit 0.3 glatt: Dreiecke kleinster Fläche im Raum, verfeinert auf die Kantenlänge des Rands, dann so verschoben, dass die Fläche ohne Krümmungssprung an Rand und ersten Nachbarring anschließt. Das ist eine Schätzung ohne Wissen über das Original; sie ist auf organischen Modellen oft gut (siehe Fremdmodelle oben), bei Kanten und scharfen Formen (CAD-Teile) nicht. Kleinere Löcher bleiben bei Ohrenschnitt oder Fächer. Die Dreiecke der glatten Füllung sind nicht „schön“ (lange schmale möglich).
 - **Form der Füllung ist eine Näherung.** Auf einer echten Kugel mit glattem Rand folgt sie der Kugel (Kappen bis zur Halbkugel; bei zackigem Rand, etwa einer Auswahl per Schwerpunkt, fällt sie auf eine flache Füllung zurück und der Bericht sagt das, Beispiel −17 % bei 65°); sonst gilt ein Paraboloid durch Rand und ersten Ring, der Ellipsoide bis rund 9 % Volumen überschießen kann und bis 0,14 der Kugelgröße neben der Fläche liegen darf. Eine Halbkugel-Kappe liegt zwar auf der Kugel, verliert aber durch die feste Dichte (unten) rund 6 % Volumen. Bei mehr als 2 % Volumenänderung nennt der Bericht die Zahl; darunter schweigt er. Der Hinweis rechnet mit dem Betrag des Volumens und gilt nur für einen einzelnen geschlossenen Körper; bei Koordinaten jenseits von etwa 1e100 oder unter 1e-100 fehlt er. Die Füllung hat eine feste Dichte (rund 240 Dreiecke), bei sehr großen Kappen wird sie grob. Zufällig gezackte Ränder werden oft abgelehnt (Selbstprüfung, „zu verwickelt“), nicht falsch gefüllt; auf der Testmatrix mit Ellipsoiden und Kugeln waren es rund 40 %. `swap` ersetzt ein Element durch den besten Grundkörper und meldet erst ab einer Abweichung von 0,15 der Diagonale, dass er nur grob passt.
 - **Geschwindigkeit.** Der Kern ist numpy; die Deckel-Triangulierung ist Python. Gemessen: `split` mit einer Ebene auf rund 100 000 Dreiecken etwa 5 Sekunden (mit Schreiben und Prüfungen), ein Gitter 3×3×3 etwa 18 Sekunden; Deckel mit mehreren tausend Randpunkten brauchen Sekunden. `remove` braucht auf 100 000 Dreiecken rund 10 Sekunden.
 - **Ebene durch einen konkaven Eckpunkt oder eine Kante des Netzes:** berühren sich die Teile danach an einer Kante, ist ein Teil nicht wasserdicht. `split` meldet das („Teil … ist nicht wasserdicht“), `verify` ebenfalls.
@@ -241,6 +270,6 @@ python -m pytest -q tests
 MESHCUT_EXAMPLES=300 python -m pytest -q tests/test_property.py     # gründlicher
 ```
 
-Die Tests prüfen unter anderem (Befunde aus den Prüfrunden stehen in `tests/test_review.py`, auch der harte Abbruch mit `os._exit`): Zufallsebenen, Ebenen durch Eckpunkte/Kanten/Flächen (hypothesis), Dreiecke in der Ebene, Keile um eine Achse, Torus/Hohlkugel (Löcher und Inseln im Deckel), alle fünf Formate, Absturz-Injektion beim Schreiben, Fremddateien im Ausgabeordner und den Vergleich mit trimesh und manifold3d. Dazu kommt ein Mutationstest (345 absichtlich eingebaute Fehler in Kern, Bearbeitung (133 davon), KI-Schicht und Dienst, jeder wird von den Tests bemerkt; `python tests/mutate.py`) sowie Tests für KI-Adapter (lokale Fake-Dienste), MCP und HTTP-API. Die Browser-Version liegt als Kopie in `docs/kkmeshcut.py`; ein Test stellt sicher, dass beide Dateien gleich sind.
+Die Tests prüfen unter anderem (Befunde aus den Prüfrunden stehen in `tests/test_review.py`, auch der harte Abbruch mit `os._exit`): Zufallsebenen, Ebenen durch Eckpunkte/Kanten/Flächen (hypothesis), Dreiecke in der Ebene, Keile um eine Achse, Torus/Hohlkugel (Löcher und Inseln im Deckel), alle fünf Formate, Absturz-Injektion beim Schreiben, Fremddateien im Ausgabeordner und den Vergleich mit trimesh und manifold3d. Dazu kommt ein Mutationstest (371 absichtlich eingebaute Fehler in Kern, Bearbeitung (159 davon), KI-Schicht und Dienst, jeder wird von den Tests bemerkt; `python tests/mutate.py`) sowie Tests für KI-Adapter (lokale Fake-Dienste), MCP und HTTP-API. Die Browser-Version liegt als Kopie in `docs/kkmeshcut.py`; ein Test stellt sicher, dass beide Dateien gleich sind.
 
 Lizenz: MIT, © K&K AI.

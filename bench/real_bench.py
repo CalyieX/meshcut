@@ -45,25 +45,42 @@ def fetch(name, cache):
 
 
 def grow_patch(T, pid, n, seed):
-    """Zusammenhaengender Fleck aus n Dreiecken (Breitensuche ueber gemeinsame Kanten von einem Startdreieck)."""
+    """Zusammenhaengender Fleck aus n Dreiecken (Breitensuche ueber gemeinsame Kanten von einem Startdreieck), der KEINE vorhandene offene Kante
+    beruehrt und dessen Rand eine einzige Schleife ist (sonst ist es kein 'Loch in einer Flaeche', sondern ein Stueck vom Rand des Modells).
+    Der erste Lauf (real_run1) hatte das nicht beachtet: Flecken am offenen Rand zaehlten als Loecher und das Werkzeug lehnte sie ehrlich ab."""
     edges = {}
     for i, t in enumerate(T):
         for k in range(3):
             a, b = int(pid[t[k]]), int(pid[t[(k + 1) % 3]])
             edges.setdefault((min(a, b), max(a, b)), []).append(i)
-    start = int(np.random.default_rng(seed).integers(len(T)))
-    seen, order, q = {start}, [start], deque([start])
-    while q and len(order) < n:
-        i = q.popleft()
-        t = T[i]
-        for k in range(3):
-            a, b = int(pid[t[k]]), int(pid[t[(k + 1) % 3]])
-            for j in edges[(min(a, b), max(a, b))]:
-                if j not in seen and len(order) < n:
-                    seen.add(j)
-                    order.append(j)
-                    q.append(j)
-    return set(order)
+    border = {v for (a, b), fl in edges.items() if len(fl) != 2 for v in (a, b)}                # offene oder mehrfach belegte Kanten
+    rng = np.random.default_rng(seed)
+    for _ in range(400):
+        start = int(rng.integers(len(T)))
+        seen, order, q = {start}, [start], deque([start])
+        while q and len(order) < n:
+            i = q.popleft()
+            t = T[i]
+            for k in range(3):
+                a, b = int(pid[t[k]]), int(pid[t[(k + 1) % 3]])
+                for j in edges[(min(a, b), max(a, b))]:
+                    if j not in seen and len(order) < n:
+                        seen.add(j)
+                        order.append(j)
+                        q.append(j)
+        if len(order) < n:
+            continue
+        verts = {int(pid[x]) for i in order for x in T[i]}
+        if verts & border:
+            continue
+        rim = {}                                                                                   # Randkanten des Flecks: jede Ecke genau zweimal = eine Schleife
+        for (a, b), fl in edges.items():
+            if sum(1 for j in fl if j in seen) == 1:
+                rim[a] = rim.get(a, 0) + 1
+                rim[b] = rim.get(b, 0) + 1
+        if rim and all(v == 2 for v in rim.values()):
+            return set(order)
+    return None
 
 
 def punched_obj(V, T, patch):
@@ -92,6 +109,8 @@ def run_case(name, src, frac, work, idx):
     pid0 = ed.position_ids(sc0)
     n = max(8, int(frac * len(T0)))
     patch = grow_patch(T0, pid0, n, 1000 + idx)
+    if patch is None:
+        return {"modell": name, "anteil": frac, "dreiecke": len(T0), "verdict": "kein Fleck", "grund": "kein Fleck ohne Beruehrung des offenen Rands", "gut": None, "verschwiegen": False}
     data, n_rest = punched_obj(sc0.V, T0, patch)
     p = work / ("%s_%g.obj" % (name, frac))
     p.write_bytes(data)

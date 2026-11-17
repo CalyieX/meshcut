@@ -2088,8 +2088,9 @@ def test_zero_parts_is_refused_for_every_backend(tmp_path, backend):
         ai.segment_mesh(mc.load_mesh(src), backend=backend, parts=0)
 
 
-def test_curved_surroundings_hint_stays_when_the_volume_shrinks_noticeably(tmp_path):
-    """Spock R21: STEADY_VOLUME zehnfach blieb ungeprueft; bei -12 Prozent Volumen muss der Gewoelbt-Hinweis erscheinen."""
+def test_curved_surroundings_hint_stays_when_the_volume_shrinks_noticeably(tmp_path, monkeypatch):
+    """Spock R21: STEADY_VOLUME zehnfach blieb ungeprueft; bei -12 Prozent Volumen muss der Gewoelbt-Hinweis erscheinen (beim flachen Fueller)."""
+    monkeypatch.setattr(ed, "FAIR_MIN_RIM", 10 ** 9)
     p, v0 = _scaled_sphere_obj(tmp_path, (1, 1, 0.8), 0.5)
     r = mc.remove(p, name="red", out=tmp_path / "o.obj")
     assert "gewoelbten Umgebung" in r["text"]

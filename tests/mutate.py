@@ -361,6 +361,32 @@ MUTANTS = [
     ('r30 core: Volumenboden zu hoch', 'max(abs(sv), diag * sa * 1e-6, 1e-300)', 'max(abs(sv), diag * sa * 1e-3, 1e-300)', 'kkmeshcut.py'),
     ('r30 core: flip ohne Hinweis', 'say("Hinweis: --flip dreht die Dreiecke vor dem Teilen.', 'pass  # say("Hinweis: --flip dreht die Dreiecke vor dem Teilen.', 'kkmeshcut.py'),
     ('r21 edit: Volumen falsch gerechnet', 'float(np.einsum("ij,ij->", V[tri[:, 0]], np.cross(V[tri[:, 1]], V[tri[:, 2]]))) / 6.0', 'float(np.einsum("ij,ij->", V[tri[:, 0]], np.cross(V[tri[:, 1]], V[tri[:, 2]]))) / 3.0', 'kkmeshcut_edit.py'),
+    ('r31 urteil: nicht-ok-Knick zu locker', 'if kn is not None and kn[0] > JUMP_BAD:', 'if kn is not None and kn[0] > 2 * JUMP_BAD:', 'kkmeshcut_edit.py'),
+    ('r31 urteil: unsicher-Knick zu locker', 'elif kn is not None and kn[0] > JUMP_UNSURE:', 'elif kn is not None and kn[0] > 2 * JUMP_UNSURE:', 'kkmeshcut_edit.py'),
+    ('r31 urteil: offene Kanten tolerant', 'if rep["offene_kanten_nachher"] > rep["offene_kanten_vorher"]:', 'if rep["offene_kanten_nachher"] > rep["offene_kanten_vorher"] + 10:', 'kkmeshcut_edit.py'),
+    ('r31 urteil: Volumen nur nach oben', 'if vol is not None and abs(vol) > VOLUME_BIG:', 'if vol is not None and vol > VOLUME_BIG:', 'kkmeshcut_edit.py'),
+    ('r31 urteil: grosses Loch zu locker', 'if rep.get("flaechenanteil", 0.0) > BIG_HOLE:', 'if rep.get("flaechenanteil", 0.0) > 2 * BIG_HOLE:', 'kkmeshcut_edit.py'),
+    ('r31 urteil: mehrere Loecher erst ab drei', 'if rep["loecher_geschlossen"] >= MANY_HOLES:', 'if rep["loecher_geschlossen"] > MANY_HOLES:', 'kkmeshcut_edit.py'),
+    ('r31 urteil: flach auf Woelbung ignoriert Volumen falsch', 'and not rep.get("ruhiges_volumen"):', 'and rep.get("ruhiges_volumen"):', 'kkmeshcut_edit.py'),
+    ('r31 urteil: keine Form stumm', 'if rep.get("keine_form"):', 'if False and rep.get("keine_form"):', 'kkmeshcut_edit.py'),
+    ('r31 urteil: Tippfehler stumm', 'if rep.get("material_tippfehler"):', 'if False and rep.get("material_tippfehler"):', 'kkmeshcut_edit.py'),
+    ('r31 urteil: Formatverlust nur bei OBJ', 'if fmt != "obj" and (sc.has_uv() or any(f.mat for f in sc.faces)):', 'if fmt == "obj" and (sc.has_uv() or any(f.mat for f in sc.faces)):', 'kkmeshcut_edit.py'),
+    ('r31 urteil: Nicht-Mannigfaltig stumm', 'if rep.get("nicht_mannigfaltig"):', 'if False and rep.get("nicht_mannigfaltig"):', 'kkmeshcut_edit.py'),
+    ('r31 urteil: grosses gewoelbtes Loch zu locker', 'if rep.get("flaechenanteil", 0.0) >= LARGE_HOLE and', 'if rep.get("flaechenanteil", 0.0) >= 10 * LARGE_HOLE and', 'kkmeshcut_edit.py'),
+    ('r31 urteil: Woelbung zu locker', 'rep.get("woelbung", 0.0) > BENT_NOTE:', 'rep.get("woelbung", 0.0) > 100 * BENT_NOTE:', 'kkmeshcut_edit.py'),
+    ('r31 knick: Bogenmass statt Grad', 'float(np.degrees(np.arccos(np.clip(float(unit[fill[0]] @ unit[kept[0]]), -1.0, 1.0))))', 'float(np.arccos(np.clip(float(unit[fill[0]] @ unit[kept[0]]), -1.0, 1.0)))', 'kkmeshcut_edit.py'),
+    ('r31 knick: Mittel gleich Maximum', 'return float(np.mean(ang)), float(np.max(ang)), len(ang)', 'return float(np.max(ang)), float(np.max(ang)), len(ang)', 'kkmeshcut_edit.py'),
+    ('r31 beschreibung: groesstes/kleinstes vertauscht', 'return (max if big else min)(cand,', 'return (min if big else max)(cand,', 'kkmeshcut_edit.py'),
+    ('r31 beschreibung: keine deutsche Endung', 'for end in ("en", "er", "es", "e", "n", "s"):', 'for end in ("en",):', 'kkmeshcut_edit.py'),
+    ('r31 satz: durch-Satz ohne Verb ist kein Ersetzen', 'if mode is None and shape is not None and any(w in _TO_WORDS for w in words):\n        mode = "swap"', 'if mode is None and shape is not None and any(w in _TO_WORDS for w in words):\n        mode = "remove"', 'kkmeshcut_edit.py'),
+    ('r31 exitcode: 2 wird 3', 'VERDICT_EXIT = 2 ', 'VERDICT_EXIT = 3 ', 'kkmeshcut_edit.py'),
+    ('r31 glatt: verbotene Diagonale erlaubt', 'W[i, k] = np.inf if (bad is not None and bad[i, k] and not (i == 0 and k == m - 1)) else cost[b]', 'W[i, k] = cost[b]', 'kkmeshcut_edit.py'),
+    ('r31 glatt: Gegenrichtung kostenlos', 'np.where(cr @ n > 0, area, 10 * area + 1e-300)', 'np.where(cr @ n > 0, area, area)', 'kkmeshcut_edit.py'),
+    ('r31 glatt: keine Verfeinerung', 'alpha = math.sqrt(2.0)', 'alpha = 1000.0', 'kkmeshcut_edit.py'),
+    ('r31 glatt: Tausch ohne Orientierungspruefung', 'if float(n1 @ n) <= 0 or float(n2 @ n) <= 0:\n                    continue', 'if False:\n                    continue', 'kkmeshcut_edit.py'),
+    ('r31 glatt: Umklappen bleibt', 'if _flipped(tris, X0, X):\n        X = X0', 'if False:\n        X = X0', 'kkmeshcut_edit.py'),
+    ('r31 glatt: kleine Loecher auch glatt', 'len(rloop) >= FAIR_MIN_RIM and', 'len(rloop) >= 0 and', 'kkmeshcut_edit.py'),
+    ('r31 glatt: Nachbarring nicht fest', 'fixed = [i for i in range(N) if i < m or i >= len(X)]', 'fixed = [i for i in range(N) if i < m]', 'kkmeshcut_edit.py'),
 ]
 
 
@@ -382,7 +408,7 @@ def run(mutant):
         (work / target).write_text(mutated, encoding="utf-8")
         shutil.copy(work / "kkmeshcut.py", work / "docs" / "kkmeshcut.py")
         (work / "docs" / "index.html").write_text((REPO / "docs" / "index.html").read_text(encoding="utf-8"), encoding="utf-8")
-        r = subprocess.run([PY, "-m", "pytest", "-x", "-q", "-p", "no:cacheprovider", "--tb=line", *(["tests/test_edit.py", "tests/test_bench.py", "tests/test_review.py"] if target == "kkmeshcut_edit.py" else ["tests"])], cwd=work, capture_output=True, text=True, timeout=1500, creationflags=NO_WINDOW, stdin=subprocess.DEVNULL)
+        r = subprocess.run([PY, "-m", "pytest", "-x", "-q", "-p", "no:cacheprovider", "--tb=line", *(["tests/test_edit.py", "tests/test_bench.py", "tests/test_review.py", "tests/test_verdict.py"] if target == "kkmeshcut_edit.py" else ["tests"])], cwd=work, capture_output=True, text=True, timeout=1500, creationflags=NO_WINDOW, stdin=subprocess.DEVNULL)
         lines = r.stdout.splitlines()
         tail = [ln for ln in lines if ln.startswith("FAILED") or ln.startswith("ERROR")][:1]
         why = [ln for ln in lines if ln.startswith(("/", "E:", "C:", "D:")) and ": " in ln][:1]            # Zeile aus --tb=line

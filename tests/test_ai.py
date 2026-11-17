@@ -356,7 +356,7 @@ def test_mcp_server_speaks_the_protocol_and_runs_the_tools(tmp_path):
     ])
     ids = {m["id"]: m for m in out}
     assert ids[1]["result"]["protocolVersion"] == "2025-06-18" and ids[1]["result"]["serverInfo"]["name"] == "meshcut"
-    assert {t["name"] for t in ids[2]["result"]["tools"]} == {"info", "split", "segment", "join", "verify", "regions", "remove", "swap"}
+    assert {t["name"] for t in ids[2]["result"]["tools"]} == {"info", "split", "segment", "join", "verify", "regions", "remove", "swap", "edit"}
     assert 1 not in ids or "result" in ids[1] and None not in ids
     body = lambda i: json.loads(ids[i]["result"]["content"][0]["text"])
     assert not ids[3]["result"]["isError"] and body(3)["faces"] == len(figure().F)

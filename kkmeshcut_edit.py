@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import struct
+import sys
 import uuid
 import zlib
 from pathlib import Path
@@ -43,6 +44,9 @@ CURVED_MIN = 0.01                                                # Loch folgt de
 CURVED_FIT = 0.02                                                # ... und der Paraboloid die Umgebung mit höchstens diesem Fehler (Anteil des Durchmessers) trifft
 UV_FIT = 0.1                                                     # UV der gewoelbten Fuellung aus der Lage, wenn der Randfit hoechstens diesen Anteil der UV-Spanne danebenliegt
 BAD_SHAPE = 0.15                                                 # swap auto: ab dieser Abweichung (Anteil der Diagonale) sagt meshcut, dass keine Form gut passt
+# --- Nachtrag 17.11.2026 NACH dem ersten Fremdmodell-Lauf (siehe bench/OK_SCHWELLEN.md, Abschnitt 'Nachtrag'): kalibriert an 6 Modellen, an 5 anderen geprueft
+LARGE_HOLE = 0.02                                                # Loch ab diesem Anteil der Oberflaeche ...
+BENT_NOTE = 0.02                                                 # ... in einer Umgebung, deren Rand und erster Ring mehr als dieser Anteil des Durchmessers von der Randebene abweichen: Mitte geschaetzt
 # --- Urteil (verdict). EINGEFROREN am 17.11.2026 VOR der ersten Messung; Aenderung nur mit Eintrag in bench/OK_SCHWELLEN.md ---
 JUMP_UNSURE = 25.0                                               # mittlerer Knickwinkel (Grad) zwischen Fuellung und angrenzender Flaeche: darueber "unsicher"
 JUMP_BAD = 60.0                                                  # ... darueber "nicht ok" (sichtbarer Knick am ganzen Fuellrand)
@@ -619,10 +623,12 @@ def nearest_face(sc, point):
     return int(src[j]), float(d[j])
 
 
-def choose_region(sc, regions, region=None, at=None, name=None):
-    given = [x for x in (region, at, name) if x not in (None, "")]
+def choose_region(sc, regions, region=None, at=None, name=None, was=None):
+    given = [x for x in (region, at, name, was) if x not in (None, "")]
     if len(given) != 1:
-        fail("Genau eine Auswahl angeben: --region NUMMER (aus regions.json), --at x,y,z oder --name NAME.")
+        fail("Genau eine Auswahl angeben: --region NUMMER (aus regions.json), --at x,y,z, --name NAME oder --was BESCHREIBUNG.")
+    if was not in (None, ""):
+        return describe_region(regions, was)
     if not regions:
         fail("Das Netz ist ein einziges, einheitliches Stueck - es gibt nichts auszuwaehlen.")
     if region not in (None, ""):
@@ -660,6 +666,113 @@ def choose_region(sc, regions, region=None, at=None, name=None):
 def _omitted_note():
     om = getattr(find_regions, "omitted", 0)
     return " (%d kleinere Elemente sind nicht nummeriert, hoechstens %d - ein kleineres Netz waehlen oder vorher mit split teilen)" % (om, MAX_REGIONS) if om else ""
+
+
+# ============================================================================= Absicht in einem Satz
+_STOP = {"der", "die", "das", "den", "dem", "des", "ein", "eine", "einen", "einem", "the", "a", "an", "bitte", "mal", "please", "von", "vom", "am", "auf"}
+_BIG = {"groesste", "groessten", "groesstes", "groessere", "largest", "biggest", "big", "grosse", "grossen"}
+_SMALL = {"kleinste", "kleinsten", "kleinstes", "smallest", "tiniest", "kleine", "kleinen"}
+_NUMBER_WORDS = {"teil", "region", "nr", "nummer", "part", "nr.", "no", "element"}
+_REMOVE_WORDS = {"entferne", "entfernen", "entfern", "loesche", "loeschen", "weg", "wegmachen", "remove", "delete", "ohne", "raus", "wegnehmen", "nimm"}
+_SWAP_WORDS = {"ersetze", "ersetzen", "tausche", "tauschen", "austauschen", "replace", "swap", "ersatz"}
+_GENERIC = {"teil", "stueck", "element", "part", "piece", "objekt", "region", "nr", "nummer"}
+_TO_WORDS = ("durch", "by", "with", "mit", "to", "zu")
+_SYNONYMS = {"rot": "red", "blau": "blue", "gruen": "green", "gelb": "yellow", "schwarz": "black", "weiss": "white", "grau": "gray", "braun": "brown",
+             "lila": "purple", "rosa": "pink", "hoecker": "bump", "buckel": "bump", "beule": "bump", "griff": "handle", "kopf": "head", "bein": "leg",
+             "fluegel": "wing", "schwanz": "tail", "tuer": "door", "deckel": "lid", "rad": "wheel", "raeder": "wheel", "auge": "eye", "nase": "nose",
+             "ohr": "ear", "fuss": "foot", "haare": "hair", "hut": "hat", "koerper": "body", "boden": "base", "sockel": "base", "stuetze": "support"}
+_SHAPE_WORDS = {"quader": "box", "wuerfel": "box", "box": "box", "cube": "box", "kiste": "box", "kugel": "sphere", "ball": "sphere", "sphere": "sphere",
+                "zylinder": "cylinder", "cylinder": "cylinder", "rolle": "cylinder", "stab": "cylinder", "saeule": "cylinder"}
+
+
+def _fold(text):
+    t = str(text).lower()
+    for a, b in (("\u00e4", "ae"), ("\u00f6", "oe"), ("\u00fc", "ue"), ("\u00df", "ss")):
+        t = t.replace(a, b)
+    return t
+
+
+def _words(text):
+    return [w for w in re.split(r"[^0-9a-z.#_-]+", _fold(text)) if w]
+
+
+def _forms(w):
+    """Schreibweisen eines Worts, die zu einem Namen passen koennen: so wie getippt, ohne deutsche Endung, uebersetzt."""
+    out = {w}
+    for end in ("en", "er", "es", "e", "n", "s"):
+        if w.endswith(end) and len(w) - len(end) >= 3:
+            out.add(w[:-len(end)])
+    return out | {_SYNONYMS[f] for f in list(out) if f in _SYNONYMS}
+
+
+def describe_region(regions, text):
+    """Waehlt ein Element nach einer Beschreibung: Name (auch als Teilwort), Material, 'Teil 7' / '#7', 'das groesste', 'das kleinste'.
+    Mehrdeutig oder ohne Treffer: Fehler mit den Namen, die es gibt."""
+    if not regions:
+        fail("Das Netz ist ein einziges, einheitliches Stueck - es gibt nichts auszuwaehlen.")
+    words = [w for w in _words(text) if w not in _STOP]
+    if not words:
+        fail("Beschreibung leer: sagen, welches Element gemeint ist (Name, Material, 'Teil 7', 'das groesste').")
+    cand, rest, big, small = list(regions), [], False, False
+    prev = ""
+    for w in words:
+        num = re.fullmatch(r"#?(\d{1,6})", w)
+        if num and (w.startswith("#") or prev in _NUMBER_WORDS or len(words) == 1):
+            rid = int(num.group(1))
+            if not 1 <= rid <= len(regions):
+                fail("Es gibt keine Region %d - gueltig sind 1 bis %d (siehe `meshcut regions`)." % (rid, len(regions)))
+            return regions[rid - 1]
+        if w in _BIG:
+            big = True
+        elif w in _SMALL:
+            small = True
+        elif w not in _NUMBER_WORDS and w not in _REMOVE_WORDS and w not in _SWAP_WORDS:
+            rest.append(w)
+        prev = w
+
+    def labels(r):
+        return [_fold(r["name"])] + [_fold(a["name"]) for a in r["also"]] + [_fold(m) for m in r["materials"]]
+    whole = " ".join(rest)
+    exact = [r for r in cand if whole and (whole in labels(r) or any(f in labels(r) for f in _forms(whole)))]
+    if len(exact) == 1:
+        return exact[0]
+    for w in rest:
+        forms = _forms(w)
+        keep = [r for r in cand if any(f in lab for f in forms for lab in labels(r))]
+        if keep:
+            cand = keep
+        else:
+            names = []
+            for r in regions:
+                names += [r["name"]] + [a["name"] for a in r["also"]]
+            fail("Nichts passt zu '%s' - vorhanden: %s%s" % (str(text)[:40], ", ".join(names[:15]), _omitted_note()))
+    if big or small:
+        return (max if big else min)(cand, key=lambda r: (r["triangles"], -r["id"] if big else r["id"]))
+    if len(cand) > 1:
+        fail("'%s' passt auf mehrere Elemente (%s) - genauer beschreiben, z. B. 'das groesste', 'das kleinste' oder 'Teil NUMMER'." % (
+            str(text)[:40], ", ".join("%d %s" % (r["id"], r["name"][:20]) for r in cand[:8])))
+    return cand[0]
+
+
+def understand(sentence):
+    """Ein Satz Absicht -> (Modus, Beschreibung des Elements, Form oder None). 'entferne den Hoecker', 'ersetze das rote Teil durch eine Kugel'."""
+    words = _words(sentence)
+    if not words:
+        fail("Satz leer: sagen, was passieren soll, z. B. 'entferne den Hoecker' oder 'ersetze Teil 3 durch eine Kugel'.")
+    mode = "swap" if any(w in _SWAP_WORDS for w in words) else ("remove" if any(w in _REMOVE_WORDS for w in words) else None)
+    shape = next((_SHAPE_WORDS[w] for w in reversed(words) if w in _SHAPE_WORDS), None)
+    if mode is None and shape is not None and any(w in _TO_WORDS for w in words):
+        mode = "swap"
+    if mode is None:
+        fail("Nicht verstanden: '%s'. Gemeint ist entfernen oder ersetzen, z. B. 'entferne den Hoecker' oder 'ersetze Teil 3 durch eine Kugel'." % str(sentence)[:60])
+    if mode == "swap":
+        cut = next((i for i, w in enumerate(words) if w in _TO_WORDS), len(words))
+        subject = words[:cut]
+    else:
+        subject = words
+    subject = [w for w in subject if w not in _REMOVE_WORDS and w not in _SWAP_WORDS and w not in _STOP and (w not in _SHAPE_WORDS or mode == "remove")]
+    subject = [w for i, w in enumerate(subject) if w not in _GENERIC or (i + 1 < len(subject) and re.fullmatch(r"#?\d+", subject[i + 1]))]      # 'das rote Teil' -> 'rote'; 'Teil 7' bleibt
+    return mode, " ".join(subject), shape
 
 
 # ============================================================================= Loch schliessen
@@ -892,12 +1005,220 @@ def _unwrap_uv_seam(sc, rloop):
     return [(x[0], x[1], sc.add_vt(out[k]), x[3], x[4]) for k, x in enumerate(rloop)]
 
 
+FAIR_MIN_RIM = 12                                                # kleinere Loecher bleiben beim Ohrenschnitt/Faecher: dort ist ein flacher Deckel schon genau genug
+FAIR_MAX_RIM = 600                                               # Loecher mit mehr Randpunkten werden nicht geglaettet gefuellt
+FAIR_MAX_FREE = 1200                                             # so viele freie Punkte hoechstens in der Fuellung (dichtes Gleichungssystem)
+
+
+def _min_area_triangulation(Pr, n, bad=None):
+    """Dreiecke (i, j, k mit i < j < k) mit kleinster Gesamtflaeche, die den Rand im Raum fuellen (dynamische Programmierung ueber Teilpolygone);
+    Dreiecke, die gegen die mittlere Normale n zeigen, kosten das Zehnfache; eine Diagonale (i, k), die im Netz schon als Kante besteht (bad[i, k]),
+    ist verboten (sie gaebe eine doppelte Kante). Rueckgabe: Liste von Index-Tripeln oder None, wenn es keine gueltige Zerlegung gibt."""
+    m = len(Pr)
+    W = np.zeros((m, m))
+    S = np.zeros((m, m), dtype=np.int64)
+    for g in range(2, m):
+        for i in range(0, m - g):
+            k = i + g
+            j = np.arange(i + 1, k)
+            cr = np.cross(Pr[j] - Pr[i], Pr[k] - Pr[i])
+            area = np.linalg.norm(cr, axis=1) / 2
+            cost = W[i, j] + W[j, k] + np.where(cr @ n > 0, area, 10 * area + 1e-300)
+            b = int(np.argmin(cost))
+            W[i, k] = np.inf if (bad is not None and bad[i, k] and not (i == 0 and k == m - 1)) else cost[b]
+            S[i, k] = j[b]
+    if not np.isfinite(W[0, m - 1]):
+        return None
+    out, stack = [], [(0, m - 1)]
+    while stack:
+        i, k = stack.pop()
+        if k - i < 2:
+            continue
+        j = int(S[i, k])
+        out.append((i, j, k))
+        stack += [(i, j), (j, k)]
+    return out
+
+
+def _flipped(tris, X0, X1):
+    """Wahr, wenn nach dem Glaetten ein Dreieck zusammengefallen ist oder umgeklappt (Normale gegen die von vorher) ist."""
+    for a, b, c in tris:
+        n0 = np.cross(X0[b] - X0[a], X0[c] - X0[a])
+        n1 = np.cross(X1[b] - X1[a], X1[c] - X1[a])
+        if float(n1 @ n1) <= 0 or float(n0 @ n1) <= 0:
+            return True
+    return False
+
+
+def _refine(Pr, tris, n, max_free):
+    """Verfeinert die Dreiecke im Rand nach Liepa: ein Dreieck bekommt einen Punkt in der Mitte, wenn dessen Abstand zu den Ecken klar groesser als die
+    Zielkante dort ist (mittlere Randkante, nach innen gemittelt); danach tauschen innere Kanten die Diagonale, wenn die neue kuerzer ist.
+    Die Randkanten bleiben unberuehrt (sie gehoeren auch den Nachbarflaechen). Rueckgabe: (Punkte, Dreiecke)."""
+    m = len(Pr)
+    X = [p for p in Pr]
+    sigma = [0.5 * (float(np.linalg.norm(Pr[k] - Pr[k - 1])) + float(np.linalg.norm(Pr[(k + 1) % m] - Pr[k]))) for k in range(m)]
+    tris = [tuple(t) for t in tris]
+    alpha = math.sqrt(2.0)
+    for _ in range(14):
+        changed = False
+        out = []
+        for a, b, c in tris:
+            if len(X) - m >= max_free:
+                out.append((a, b, c))
+                continue
+            cen = (X[a] + X[b] + X[c]) / 3
+            sc_ = (sigma[a] + sigma[b] + sigma[c]) / 3
+            ds = [float(np.linalg.norm(cen - X[v])) for v in (a, b, c)]
+            if all(alpha * d > sc_ for d in ds) and all(alpha * d > sigma[v] for d, v in zip(ds, (a, b, c))):
+                k = len(X)
+                X.append(cen)
+                sigma.append(sc_)
+                out += [(a, b, k), (b, c, k), (c, a, k)]
+                changed = True
+            else:
+                out.append((a, b, c))
+        tris = out
+        for _sweep in range(30):                                  # Kanten tauschen, solange es kuerzer wird
+            owner = {}
+            for ti, t in enumerate(tris):
+                for e in range(3):
+                    u, v = t[e], t[(e + 1) % 3]
+                    owner.setdefault((min(u, v), max(u, v)), []).append((ti, e))
+            flipped, dead = False, set()
+            for (u, v), fl in owner.items():
+                if len(fl) != 2 or fl[0][0] in dead or fl[1][0] in dead:
+                    continue
+                (t1, e1), (t2, e2) = fl
+                a1, b1 = tris[t1][e1], tris[t1][(e1 + 1) % 3]
+                c1 = tris[t1][(e1 + 2) % 3]
+                c2 = tris[t2][(e2 + 2) % 3]
+                if (min(c1, c2), max(c1, c2)) in owner:
+                    continue
+                if np.linalg.norm(X[c1] - X[c2]) >= 0.95 * np.linalg.norm(X[a1] - X[b1]):
+                    continue
+                n1 = np.cross(X[c2] - X[c1], X[a1] - X[c1])       # neue Dreiecke (c1, c2, ...) muessen wie vorher nach n zeigen und nicht entarten
+                n2 = np.cross(X[b1] - X[c1], X[c2] - X[c1])
+                if float(n1 @ n) <= 0 or float(n2 @ n) <= 0:
+                    continue
+                tris[t1] = (c1, a1, c2)
+                tris[t2] = (c1, c2, b1)
+                dead |= {t1, t2}
+                flipped = True
+            if not flipped:
+                break
+        if not changed:
+            break
+    return np.array(X), tris
+
+
+def _fair_fill(sc, rloop, Pr, n, ref, has_n):
+    """Fuellung fuer Loecher, die weder eben noch eine saubere Kappe sind: Dreiecke kleinster Flaeche im Raum, unterteilt auf die Kantenlaenge des Randes, dann
+    so verschoben, dass die Flaeche glatt an Rand und ersten Nachbarring anschliesst (kleinste Kruemmungsaenderung; die Nachbarn bleiben unberuehrt).
+    Rueckgabe: Liste neuer Flaechen oder None, wenn das Loch zu gross, entartet oder die Rechnung nicht sauber aufgeht."""
+    m = len(rloop)
+    if m < 3 or m > FAIR_MAX_RIM:
+        return None
+    pid = sc.hole_ctx[0] if getattr(sc, "hole_ctx", None) else position_ids(sc)
+    removed = sc.hole_ctx[1] if getattr(sc, "hole_ctx", None) else set()
+    existing = set()
+    for fi, f in enumerate(sc.faces):
+        if fi in removed:
+            continue
+        cc = f.c
+        for k in range(len(cc)):
+            a_, b_ = int(pid[cc[k][0]]), int(pid[cc[(k + 1) % len(cc)][0]])
+            existing.add((a_, b_) if a_ < b_ else (b_, a_))
+    rp = [int(pid[x[1]]) for x in rloop]
+    bad = np.zeros((m, m), dtype=bool)
+    for i in range(m):
+        for k in range(i + 2, m):
+            if ((rp[i], rp[k]) if rp[i] < rp[k] else (rp[k], rp[i])) in existing:
+                bad[i, k] = True
+    tris = _min_area_triangulation(Pr, n, bad)
+    if tris is None or len(tris) != m - 2:
+        return None
+    X, tris = _refine(Pr, tris, n, FAIR_MAX_FREE)
+    nfree = len(X) - m
+    X0 = X.copy()
+    if nfree > 0:
+        pid = sc.hole_ctx[0] if getattr(sc, "hole_ctx", None) else None
+        key = (lambda i: int(pid[i])) if pid is not None else int
+        local = {key(x[1]): k for k, x in enumerate(rloop)}
+        ext = []                                                  # feste Punkte ausserhalb: die Ecken der anliegenden Restflaechen
+        tri_all = [(a, b, c) for a, b, c in tris]
+        for x in rloop:
+            c = [cc[0] for cc in sc.faces[x[4]].c]
+            ids = []
+            for ci in c:
+                kk = key(ci)
+                if kk not in local:
+                    local[kk] = len(X) + len(ext)
+                    ext.append(sc.V[ci])
+                ids.append(local[kk])
+            tri_all += [(ids[0], ids[t], ids[t + 1]) for t in range(1, len(ids) - 1)]
+        Xall = np.vstack([X] + ([np.array(ext)] if ext else []))
+        N = len(Xall)
+        nb = [set() for _ in range(N)]
+        for a, b, c in tri_all:
+            nb[a] |= {b, c}
+            nb[b] |= {a, c}
+            nb[c] |= {a, b}
+        free = list(range(m, len(X)))
+        rows = free + list(range(m))                              # Zeilen: freie Punkte und der Rand (dessen Kruemmung bindet die Fuellung an den Nachbarring)
+        L = np.zeros((len(rows), N))
+        for r, i in enumerate(rows):
+            d = len(nb[i])
+            if d == 0:
+                return None
+            L[r, i] = 1.0
+            for s in nb[i]:
+                L[r, s] -= 1.0 / d
+        fixed = [i for i in range(N) if i < m or i >= len(X)]
+        A = L[:, free]
+        rhs = -L[:, fixed] @ Xall[fixed]
+        try:
+            sol, *_ = np.linalg.lstsq(A, rhs, rcond=None)
+        except (np.linalg.LinAlgError, ValueError):
+            return None
+        if not np.isfinite(sol).all():
+            return None
+        X = X.copy()
+        X[m:] = sol
+    # Pruefung: kein Dreieck darf umklappen oder zusammenfallen (sonst bleibt es bei der ungeglaetteten Fuellung)
+    if _flipped(tris, X0, X):
+        X = X0
+    # Eckpunkte, UV und Normalen
+    arr = _rim_uv(sc, rloop)
+    have_uv = arr is not None
+    cen = Pr.mean(axis=0)
+    diam = float(np.linalg.norm(Pr.max(axis=0) - Pr.min(axis=0)))
+    uv_map = None
+    uvc = arr.mean(axis=0) if have_uv else None
+    if have_uv:
+        B = np.hstack([(Pr - cen) / diam, np.ones((m, 1))])
+        coef_uv, *_ = np.linalg.lstsq(B, arr, rcond=None)
+        span = float(np.ptp(arr, axis=0).max()) or 1.0
+        if np.linalg.matrix_rank(B) == 4 and float(np.abs(arr - B @ coef_uv).max()) <= UV_FIT * span:
+            uv_map = lambda p: np.append((p - cen) / diam, 1.0) @ coef_uv
+    ids = [(rloop[k][1], rloop[k][2]) for k in range(m)]
+    for k in range(m, len(X)):
+        ids.append((sc.add_vertex(X[k]), sc.add_vt(uv_map(X[k]) if uv_map else uvc) if have_uv else -1))
+    out = []
+    for a, b, c in tris:
+        tn = np.cross(X[b] - X[a], X[c] - X[a])
+        tl = float(np.linalg.norm(tn))
+        nid = sc.add_vn(tn / tl) if has_n and tl > 0 else -1
+        out.append(Face([(ids[a][0], ids[a][1], nid), (ids[b][0], ids[b][1], nid), (ids[c][0], ids[c][1], nid)], ref.mat, ref.obj, ref.grp, ""))
+    return out
+
+
 def close_holes(sc, pid, removed):
     """Schliesst die Loecher, die das Entfernen hinterlaesst. Rueckgabe: (neue Flaechen, Anzahl geschlossener Loecher,
     Anzahl der Loecher mit nicht ebenem Rand, die flach gefuellt wurden)."""
     loops = _hole_loops(sc, pid, removed)
     new, closed, uneven, bent = [], 0, 0, 0
     sc.hole_ctx = (pid, set(removed))
+    sc.hole_bend = 0.0                                            # staerkste Woelbung unter den Loechern: Abstand von Rand und erstem Ring zur Randebene, Anteil des Durchmessers
     for loop in loops:
         rloop = loop[::-1]                                        # Umlaufrichtung der neuen Flaechen ist die Gegenrichtung
         rloop = _unwrap_uv_seam(sc, rloop)
@@ -912,17 +1233,20 @@ def close_holes(sc, pid, removed):
             mats[sc.faces[fi].mat] = mats.get(sc.faces[fi].mat, 0) + 1
         ref = sc.faces[max(faces_adj, key=lambda fi: mats[sc.faces[fi].mat])]
         has_n = sc.has_normals()
-        tris, flat, curved = None, False, None
+        tris, flat, curved, bent_here, fair = None, False, None, False, None
         if nl > 0 and diam > 0:
             n = n / nl
+            ring_all = np.vstack([Pr] + [sc.V[[c[0] for c in sc.faces[x[4]].c]] for x in rloop])
             try:
                 curved = _curved_fill(sc, rloop, Pr, cen, n)
             except np.linalg.LinAlgError:
                 fail("Die Koordinaten sind zu gross oder zu klein fuer die Fuellung (Zahlenbereich der Gleitkommazahlen); das Netz vorher skalieren.")
             flat = float(np.abs((Pr - cen) @ n).max()) <= HOLE_PLANAR * diam
+            if curved is None or not curved["star"]:                  # nur geschaetzte Fuellungen zaehlen; eine Kugel-/Paraboloid-Fuellung mit gutem Fit ist belegt
+                sc.hole_bend = max(sc.hole_bend, float(np.abs((ring_all - cen) @ n).max()) / diam)
             if curved is None or not curved["star"]:             # keine Woelbung gefunden: die Fuellung wird flach, und das Volumen schrumpft, wenn die Umgebung gewoelbt ist
                 ring = np.vstack([sc.V[[c[0] for c in sc.faces[x[4]].c]] for x in rloop])
-                bent += int(float(np.abs((ring - cen) @ n).max()) > BENT_RING * diam)
+                bent_here = float(np.abs((ring - cen) @ n).max()) > BENT_RING * diam
             tris = _projected_ear_clip(Pr, cen, n)                  # in der Randebene triangulieren, auch bei gewoelbtem oder konkavem Rand
             fan_ok = _fan_is_consistent(Pr, cen, n)
             if tris is not None and fan_ok:                         # Pruefer: Ohrenschnitt gegen Faecher vom Mittelpunkt
@@ -930,10 +1254,18 @@ def close_holes(sc, pid, removed):
                 qf = min(_quality(np.array([Pr[k], Pr[(k + 1) % len(Pr)], cen])) for k in range(len(Pr)))
                 if qe < SLIVER and qf > 3 * qe:
                     tris = None
-            if tris is None and not fan_ok and not (curved is not None and curved["star"]):
+            if (curved is None or not curved["star"]) and len(rloop) >= FAIR_MIN_RIM and (not flat or bent_here or tris is None):
+                try:                                                # nicht eben oder in gewoelbter Umgebung: glatt anschliessend fuellen statt flach
+                    fair = _fair_fill(sc, rloop, Pr, n, ref, has_n)
+                except (np.linalg.LinAlgError, ValueError, FloatingPointError):
+                    fair = None
+            bent += int(bent_here and fair is None)
+            if fair is None and tris is None and not fan_ok and not (curved is not None and curved["star"]):
                 fail("Das Loch ist zu verwickelt, um es sauber zu schliessen (Rand mit %d Punkten, weder eben noch sternfoermig). "
                      "Ein kleineres Element waehlen oder das Netz vorher reparieren." % len(Pr))
-        if curved is not None and curved["star"]:
+        if fair is not None:
+            new += fair
+        elif curved is not None and curved["star"]:
             new += _fill_with_rings(sc, rloop, Pr, cen, n, curved, ref, has_n)
         elif tris is not None:
             uneven += 0 if flat else 1
@@ -1428,6 +1760,67 @@ def _raw_material(sc, region):
     return want
 
 
+def _fill_jump(out, first, count):
+    """Knickwinkel (Grad) zwischen den neuen Fuellflaechen out.faces[first:first+count] und den angrenzenden behaltenen Flaechen, gemessen am fertigen Ergebnis.
+    Rueckgabe: (Mittel, Hoechstwert, Anzahl Randkanten) oder None, wenn die Fuellung keine behaltene Nachbarflaeche hat."""
+    if count <= 0:
+        return None
+    pid = position_ids(out)
+    nv = _fan_normals(out, range(len(out.faces)))
+    ln = np.linalg.norm(nv, axis=1)
+    unit = nv / np.maximum(ln, 1e-300)[:, None]
+    edges = {}
+    for i, f in enumerate(out.faces):
+        c = f.c
+        for k in range(len(c)):
+            a, b = int(pid[c[k][0]]), int(pid[c[(k + 1) % len(c)][0]])
+            if a != b:
+                edges.setdefault((a, b) if a < b else (b, a), []).append(i)
+    ang = []
+    for fl in edges.values():
+        fill = [i for i in fl if first <= i < first + count]
+        kept = [i for i in fl if i < first]
+        if fill and len(kept) >= 1 and ln[fill[0]] > 0 and ln[kept[0]] > 0:
+            ang.append(float(np.degrees(np.arccos(np.clip(float(unit[fill[0]] @ unit[kept[0]]), -1.0, 1.0)))))
+    if not ang:
+        return None
+    return float(np.mean(ang)), float(np.max(ang)), len(ang)
+
+
+def _verdict(sc, rep, fmt):
+    """Dreistufiges Urteil aus dem Bericht (Schwellen: JUMP_*, VOLUME_BIG, BIG_HOLE, MANY_HOLES). Rueckgabe: (Stufe, [Gruende]); Stufe 'ok', 'unsicher' oder 'nicht ok'."""
+    bad, unsure = [], []
+    if rep["offene_kanten_nachher"] > rep["offene_kanten_vorher"]:
+        bad.append("das Loch ist nicht ganz zu: %d offene Kanten mehr als vorher" % (rep["offene_kanten_nachher"] - rep["offene_kanten_vorher"]))
+    kn = rep.get("knick")
+    if kn is not None and kn[0] > JUMP_BAD:
+        bad.append("die Oberflaeche knickt an der Fuellung stark ab (im Mittel %.0f Grad)" % kn[0])
+    elif kn is not None and kn[0] > JUMP_UNSURE:
+        unsure.append("die Oberflaeche knickt an der Fuellung sichtbar ab (im Mittel %.0f Grad)" % kn[0])
+    vol = rep.get("volumen_aenderung")
+    if vol is not None and abs(vol) > VOLUME_BIG:
+        unsure.append("das Volumen aendert sich um %+.0f %%" % (100 * vol))
+    if rep.get("flaechenanteil", 0.0) > BIG_HOLE:
+        unsure.append("das Loch ist gross (%.0f %% der Oberflaeche): was darunter war, muss erfunden werden" % (100 * rep["flaechenanteil"]))
+    if rep["loecher_geschlossen"] >= MANY_HOLES:
+        unsure.append("das Entfernen hinterlaesst %d getrennte Loecher, die einzeln gefuellt werden" % rep["loecher_geschlossen"])
+    if rep.get("flaechenanteil", 0.0) >= LARGE_HOLE and rep.get("woelbung", 0.0) > BENT_NOTE:
+        unsure.append("das Loch ist gross (%.0f %% der Oberflaeche) und die Umgebung gewoelbt: die Mitte der Fuellung ist geschaetzt" % (100 * rep["flaechenanteil"]))
+    if (rep.get("uneven", 0) or rep.get("bent", 0)) and not rep.get("ruhiges_volumen"):
+        unsure.append("die Fuellung ist flach, die Flaeche drumherum ist gewoelbt")
+    if rep.get("keine_form"):
+        unsure.append("keine der Grundformen passt gut zum Original")
+    if rep.get("material_tippfehler"):
+        unsure.append("das Material kommt in der Datei sonst nicht vor")
+    if fmt != "obj" and (sc.has_uv() or any(f.mat for f in sc.faces)):
+        unsure.append("Farben, Material und UV der Eingabe gehen in diesem Dateiformat verloren")
+    if rep.get("nicht_mannigfaltig"):
+        unsure.append("das Netz hat Kanten, an denen mehr als zwei Flaechen zusammentreffen")
+    if bad:
+        return "nicht ok", bad + unsure
+    return ("unsicher", unsure) if unsure else ("ok", [])
+
+
 def edit_scene(sc, region, mode, shape="auto", axis="auto", scale=1.0, material=None, close=True):
     """Gemeinsamer Kern von remove und swap. Rueckgabe: (neue Szene, behaltene Flaechennummern, Bericht)."""
     pid = position_ids(sc)
@@ -1439,6 +1832,8 @@ def edit_scene(sc, region, mode, shape="auto", axis="auto", scale=1.0, material=
     out = sc.copy()
     open_before = _boundary_edges(sc, pid)
     new_faces, holes, uneven, prim_note, hints = [], 0, 0, "", []
+    n_fill = 0
+    typo = no_shape = False
     lo = np.array(region["bbox"]["min"])
     hi = np.array(region["bbox"]["max"])
     prim = None
@@ -1464,6 +1859,7 @@ def edit_scene(sc, region, mode, shape="auto", axis="auto", scale=1.0, material=
     if close:                                                    # auch beim Ersetzen: erst das Loch zu, dann sitzt der Ersatz darauf
         extra, holes, uneven = close_holes(out, pid, removed)
         new_faces += extra
+        n_fill = len(extra)
     if prim is not None:
         kind, ax, plo, phi_, mat, uvbox = prim
         smooth = "1" if kind != "box" else ""
@@ -1474,22 +1870,31 @@ def edit_scene(sc, region, mode, shape="auto", axis="auto", scale=1.0, material=
         hints.append("%d Loch/Loecher mit nicht ebenem Rand wurden flach gefuellt (Ohrenschnitt aus Randpunkten): die Fuellung folgt der Woelbung der Umgebung nicht." % uneven)
     if prim is not None and prim[4] and prim[4] not in {f.mat for f in sc.faces}:
         shown_m = _plain(prim[4]) if sc.escaped else prim[4]
+        typo = True
         hints.append("Das Material '%s' kommt in der Datei sonst nicht vor (Tippfehler?): es muss in der .mtl stehen, sonst bleibt der Ersatz ohne Material." % shown_m[:40])
     if ranking and ranking[0][0] > BAD_SHAPE:
+        no_shape = True
         hints.append("Kein Kandidat passt gut (beste Abweichung %.2f der Diagonale): der Ersatz ist nur eine grobe Naeherung." % ranking[0][0])
     out.faces = [sc.faces[i] for i in kept] + new_faces
-    steady = False                                                # bei einem Koerper ohne spuerbare Volumenaenderung waere "das Volumen schrumpft" falsch
+    steady, vol_change = False, None                              # bei einem Koerper ohne spuerbare Volumenaenderung waere "das Volumen schrumpft" falsch
     if _single_closed_solid(sc):                                  # ein Koerper: die Volumenaenderung wird immer genannt, damit eine zu flache oder zu hohe Fuellung nie still bleibt
         v0, v1 = abs(_scene_volume(sc)), abs(_scene_volume(out))        # nach innen orientierte Koerper haben negatives Volumen, der Betrag zaehlt
         if v0 > 0 and abs(v1 - v0) > VOLUME_NOTE * v0:
             hints.append("Das Volumen aendert sich um %+.0f %% (%.4g -> %.4g). Bei einem entfernten Teil ist das zu erwarten; sitzt das Loch in einer Woelbung, kann die Fuellung zu flach oder zu hoch sein." % (100.0 * (v1 - v0) / v0, v0, v1))
         steady = v0 > 0 and abs(v1 - v0) <= STEADY_VOLUME * v0
+        vol_change = (v1 - v0) / v0 if v0 > 0 else None
     if getattr(out, "bent_holes", 0) and not steady:
         hints.append("%d Loch/Loecher liegen in einer gewoelbten Umgebung, fuer die keine passende Woelbung gefunden wurde (keine Kugel): sie wurden flach gefuellt, das Volumen schrumpft." % out.bent_holes)
     open_after = _boundary_edges(out, position_ids(out))
+    tot_area = float(np.linalg.norm(_fan_normals(sc, range(len(sc.faces))), axis=1).sum()) / 2
+    rem_area = float(np.linalg.norm(_fan_normals(sc, removed), axis=1).sum()) / 2
+    jump = _fill_jump(out, len(kept), n_fill)
+    nonman = any(v > 2 for v in edge_counts(sc, pid).values())
     report = {"entfernt": len(removed), "entfernte_dreiecke": int(sc.n_triangles(removed)), "neu": len(new_faces),
               "neue_dreiecke": int(sum(len(f.c) - 2 for f in new_faces)), "loecher_geschlossen": holes,
-              "ersatz": prim_note, "kandidaten": [(round(v, 4), k, a) for v, k, a in ranking], "offene_kanten_vorher": open_before, "offene_kanten_nachher": open_after, "hinweise": hints}
+              "ersatz": prim_note, "kandidaten": [(round(v, 4), k, a) for v, k, a in ranking], "offene_kanten_vorher": open_before, "offene_kanten_nachher": open_after, "hinweise": hints,
+              "knick": jump, "volumen_aenderung": vol_change, "ruhiges_volumen": steady, "flaechenanteil": rem_area / tot_area if tot_area > 0 else 0.0,
+              "uneven": uneven, "bent": getattr(out, "bent_holes", 0), "woelbung": getattr(out, "hole_bend", 0.0), "keine_form": no_shape, "material_tippfehler": typo, "nicht_mannigfaltig": nonman}
     return out, kept, report
 
 
@@ -1518,18 +1923,43 @@ def _typed(sc, text):
     return "".join(chr(ESCAPE_BASE + ord(c)) if 0x80 <= ord(c) <= 0xFF else (ESCAPE_MARK + c if 0xF700 <= ord(c) <= 0xF7FF else c) for c in text)
 
 
-def _run_edit(a, mode):
+VERDICT_EXIT = 2                                                 # Ausgang bei "nicht ok": die Datei ist geschrieben, aber ein Aufrufer soll es merken
+
+
+def _verdict_line(level, reasons):
+    return "verdict: %s" % level + (" - " + "; ".join(reasons[:3]) if reasons else "")
+
+
+def _say_json(r, rep, level, reasons, dst, same):
+    js = {"verdict": level, "grund": reasons, "region": r["id"], "entfernte_dreiecke": rep["entfernte_dreiecke"], "neue_dreiecke": rep["neue_dreiecke"],
+          "loecher_geschlossen": rep["loecher_geschlossen"], "ersatz": rep["ersatz"], "offene_kanten_vorher": rep["offene_kanten_vorher"],
+          "offene_kanten_nachher": rep["offene_kanten_nachher"], "knick_mittel_grad": rep["knick"][0] if rep["knick"] else None,
+          "knick_max_grad": rep["knick"][1] if rep["knick"] else None, "volumen_aenderung": rep["volumen_aenderung"], "hinweise": rep["hinweise"],
+          "geschrieben": str(dst)}
+    mc.say(json.dumps(js))
+
+
+def _run_edit(a, mode, announce=None):
     _check_material(getattr(a, "material", None))
     _check_numbers(a)
     sc = read_scene(a.input)
     regions = find_regions(sc)
-    r = choose_region(sc, regions, a.region, a.at, a.name)
+    r = choose_region(sc, regions, a.region, a.at, a.name, getattr(a, "was", None))
     dst = _out_path(a.input, a.out)
     new, kept, rep = edit_scene(sc, r, mode, getattr(a, "shape", "auto"), getattr(a, "axis", "auto"), getattr(a, "scale", 1.0),
                                 getattr(a, "material", None))
     same = _write_and_check(new, sc, kept, dst)
     mtl = _copy_mtl(sc, a.input, dst) if mc.detect_format(dst) == "obj" else []
     total = sc.n_triangles()
+    fmt_out = mc.detect_format(dst)
+    level, reasons = _verdict(sc, rep, fmt_out)
+    if announce and not getattr(a, "json", False):
+        mc.say(announce)
+    if getattr(a, "json", False):
+        _say_json(r, rep, level, reasons, dst, same)
+        if level == "nicht ok":
+            sys.exit(VERDICT_EXIT)
+        return
     mc.say("%s %d (%s, %d Dreiecke) %s." % ("Entfernt: Region" if mode == "remove" else "Ersetzt: Region", r["id"], r["name"], rep["entfernte_dreiecke"],
                                             "entfernt" if mode == "remove" else "durch " + rep["ersatz"]))
     if rep["kandidaten"]:
@@ -1553,6 +1983,11 @@ def _run_edit(a, mode):
     if mtl:
         mc.say("Materialdatei mitkopiert: %s" % ", ".join(mtl))
     mc.say("Geschrieben: %s" % dst)
+    if rep["knick"] is not None:
+        mc.say("Knick am Fuellrand (am Ergebnis gemessen): im Mittel %.1f Grad, hoechstens %.1f Grad an %d Randkanten." % rep["knick"])
+    mc.say(_verdict_line(level, reasons))
+    if level == "nicht ok":
+        sys.exit(VERDICT_EXIT)
 
 
 def cmd_regions(a):
@@ -1589,6 +2024,15 @@ def cmd_regions(a):
     mc.say("Geschrieben: %s, %s" % (out / "regions.png", out / "regions.json"))
 
 
+def cmd_edit(a):
+    """Ein Satz Absicht: 'entferne den Hoecker' / 'ersetze das groesste Teil durch eine Kugel'. Das Werkzeug waehlt Element, Form und alles Weitere selbst."""
+    mode, was, shape = understand(a.satz)
+    a.was, a.region, a.at, a.name = was, None, None, None
+    a.shape, a.axis, a.scale, a.material = shape or "auto", "auto", 1.0, None
+    names = {"box": "Quader", "sphere": "Kugel", "cylinder": "Zylinder"}
+    _run_edit(a, mode, announce="Verstanden: %s%s, Element nach der Beschreibung '%s'." % ("entfernen" if mode == "remove" else "ersetzen", (" durch " + names[shape]) if shape else "", was))
+
+
 def cmd_remove(a):
     _run_edit(a, "remove")
 
@@ -1609,7 +2053,16 @@ def register(sub):
         s.add_argument("--region", help="Nummer aus regions.json")
         s.add_argument("--at", help="Punkt x,y,z auf dem Element (das kleinste Element dort wird gewaehlt)")
         s.add_argument("--name", help="Name eines Objekts, einer Gruppe oder eines Materials")
+        s.add_argument("--was", help="Beschreibung statt Nummer: Name (auch Teilwort), Material, 'Teil 7', 'das groesste', 'das kleinste'")
         s.add_argument("--out", help="Ausgabedatei (Vorgabe: <Eingabe>_edit.<Endung>; die Eingabe wird nie ueberschrieben)")
+        s.add_argument("--json", action="store_true", help="Ergebnis als ein JSON-Objekt (verdict, grund, Zahlen) statt als Text")
+
+    s = sub.add_parser("edit", help="EIN SATZ genuegt: 'entferne den Hoecker', 'ersetze das groesste Teil durch eine Kugel' - meshcut waehlt alles Weitere selbst und urteilt am Ende")
+    s.add_argument("input")
+    s.add_argument("satz", help="was passieren soll, in einem Satz (deutsch oder englisch)")
+    s.add_argument("--out", help="Ausgabedatei (Vorgabe: <Eingabe>_edit.<Endung>; die Eingabe wird nie ueberschrieben)")
+    s.add_argument("--json", action="store_true", help="Ergebnis als ein JSON-Objekt (verdict, grund, Zahlen) statt als Text")
+    s.set_defaults(fn=cmd_edit)
 
     s = sub.add_parser("remove", help="ein Element entfernen und das Loch sauber schliessen (Material, UV, Normalen der Umgebung bleiben)")
     selection(s)

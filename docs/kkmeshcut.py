@@ -42,7 +42,7 @@ from pathlib import Path
 
 import numpy as np
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 MAX_PARTS = 1024
 MAX_PLANES = 60
@@ -2649,8 +2649,8 @@ def _run(cmd, positional, opts):
             a = build_parser(_ApiParser).parse_args([cmd] + [str(x) for x in positional] + _flags(opts))
             a.fn(a)
     except SystemExit as e:
-        if e.code in (None, 0):
-            return out.getvalue()
+        if e.code in (None, 0) or (e.code == 2 and cmd in ("remove", "swap", "edit") and ("verdict: nicht ok" in out.getvalue() or '"verdict": "nicht ok"' in out.getvalue())):
+            return out.getvalue()              # "nicht ok": Datei ist geschrieben, das Urteil steht im Ergebnis (die Kommandozeile endet mit 2)
         raise MeshcutError(str(e.code).removeprefix("Fehler: ")) from None
     except (KeyboardInterrupt, MeshcutError):
         raise
@@ -2727,10 +2727,18 @@ def regions(input, outdir, **options):
     return json.loads((Path(outdir) / "regions.json").read_text(encoding="utf-8"))
 
 
-def _edit(cmd, input, options):
-    text = _run(cmd, [input], options)
+def _edit_result(text):
+    if text.lstrip().startswith("{"):                              # --json: ein Objekt
+        js = json.loads(text)
+        return {"output": js.get("geschrieben"), "text": text, "verdict": js.get("verdict"), "reason": "; ".join(js.get("grund") or []) or None}
     out = next((ln[len("Geschrieben: "):] for ln in text.splitlines() if ln.startswith("Geschrieben: ")), None)
-    return {"output": out, "text": text}
+    line = next((ln for ln in reversed(text.splitlines()) if ln.startswith("verdict: ")), "")
+    level, _, reason = line[len("verdict: "):].partition(" - ")
+    return {"output": out, "text": text, "verdict": level or None, "reason": reason or None}
+
+
+def _edit(cmd, input, options):
+    return _edit_result(_run(cmd, [input], options))
 
 
 def remove(input, **options):
@@ -2743,12 +2751,17 @@ def swap(input, **options):
     return _edit("swap", input, options)
 
 
+def edit(input, satz, **options):
+    """Ein Satz Absicht ('entferne den Hoecker'): meshcut waehlt Element, Form und alles Weitere selbst. Rueckgabe wie remove (mit verdict/reason)."""
+    return _edit_result(_run("edit", [input, satz], options))
+
+
 def tools():
     """Alle Befehle als Liste von Tool-Definitionen (JSON-Schema)."""
     return tool_definitions()
 
 
-__all__ = ["__version__", "MeshcutError", "Mesh", "Plane", "split", "segment", "join", "verify", "info", "labels", "regions", "remove", "swap", "tools", "load_mesh",
+__all__ = ["__version__", "MeshcutError", "Mesh", "Plane", "split", "segment", "join", "verify", "info", "labels", "regions", "remove", "swap", "edit", "tools", "load_mesh",
            "split_planes", "split_labels", "triangle_hash", "mesh_stats", "parse_plane"]
 
 
