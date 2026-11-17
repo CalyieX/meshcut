@@ -9,6 +9,7 @@
   "abweichung": 0.0,
   "normale_grad": 0.0,
   "offene_kanten_mehr": 0,
+  "eben": true,
   "gut": true,
   "verschwiegen": false
  },
@@ -22,6 +23,7 @@
   "abweichung": 0.0,
   "normale_grad": 0.0,
   "offene_kanten_mehr": 0,
+  "eben": true,
   "gut": true,
   "verschwiegen": false
  },
@@ -35,6 +37,7 @@
   "abweichung": 0.0,
   "normale_grad": 0.0,
   "offene_kanten_mehr": 0,
+  "eben": true,
   "gut": true,
   "verschwiegen": false
  },
@@ -48,6 +51,7 @@
   "abweichung": 0.0119,
   "normale_grad": 5.4,
   "offene_kanten_mehr": 0,
+  "eben": false,
   "gut": true,
   "verschwiegen": false
  },
@@ -61,6 +65,7 @@
   "abweichung": 0.0034,
   "normale_grad": 17.8,
   "offene_kanten_mehr": 0,
+  "eben": false,
   "gut": true,
   "verschwiegen": false
  },
@@ -74,6 +79,7 @@
   "abweichung": 0.0044,
   "normale_grad": 24.5,
   "offene_kanten_mehr": 0,
+  "eben": false,
   "gut": true,
   "verschwiegen": false
  },
@@ -87,6 +93,7 @@
   "abweichung": 0.0085,
   "normale_grad": 14.0,
   "offene_kanten_mehr": 0,
+  "eben": false,
   "gut": true,
   "verschwiegen": false
  },
@@ -100,6 +107,7 @@
   "abweichung": 0.019,
   "normale_grad": 35.7,
   "offene_kanten_mehr": 0,
+  "eben": false,
   "gut": false,
   "verschwiegen": false
  },
@@ -113,6 +121,7 @@
   "abweichung": 0.037,
   "normale_grad": 34.9,
   "offene_kanten_mehr": 0,
+  "eben": false,
   "gut": false,
   "verschwiegen": false
  },
@@ -126,6 +135,7 @@
   "abweichung": 0.0064,
   "normale_grad": 17.4,
   "offene_kanten_mehr": 0,
+  "eben": false,
   "gut": true,
   "verschwiegen": false
  },
@@ -139,6 +149,7 @@
   "abweichung": 0.015,
   "normale_grad": 63.8,
   "offene_kanten_mehr": 0,
+  "eben": false,
   "gut": false,
   "verschwiegen": false
  },
@@ -152,6 +163,7 @@
   "abweichung": 0.0512,
   "normale_grad": 53.1,
   "offene_kanten_mehr": 0,
+  "eben": false,
   "gut": false,
   "verschwiegen": false
  },
@@ -165,6 +177,7 @@
   "abweichung": 0.0159,
   "normale_grad": 23.5,
   "offene_kanten_mehr": 0,
+  "eben": false,
   "gut": true,
   "verschwiegen": false
  },
@@ -178,6 +191,7 @@
   "abweichung": 0.0301,
   "normale_grad": 36.5,
   "offene_kanten_mehr": 0,
+  "eben": false,
   "gut": false,
   "verschwiegen": false
  },
@@ -191,6 +205,7 @@
   "abweichung": 0.0596,
   "normale_grad": 40.3,
   "offene_kanten_mehr": 0,
+  "eben": false,
   "gut": false,
   "verschwiegen": false
  },
@@ -204,6 +219,7 @@
   "abweichung": 0.0085,
   "normale_grad": 60.2,
   "offene_kanten_mehr": 0,
+  "eben": false,
   "gut": false,
   "verschwiegen": false
  },
@@ -217,6 +233,7 @@
   "abweichung": 0.0266,
   "normale_grad": 17.4,
   "offene_kanten_mehr": 0,
+  "eben": false,
   "gut": false,
   "verschwiegen": false
  },
@@ -230,6 +247,7 @@
   "abweichung": 0.0462,
   "normale_grad": 107.0,
   "offene_kanten_mehr": 0,
+  "eben": false,
   "gut": false,
   "verschwiegen": false
  },
@@ -243,6 +261,7 @@
   "abweichung": 0.0066,
   "normale_grad": 21.8,
   "offene_kanten_mehr": 0,
+  "eben": false,
   "gut": true,
   "verschwiegen": false
  },
@@ -256,6 +275,7 @@
   "abweichung": 0.0231,
   "normale_grad": 30.6,
   "offene_kanten_mehr": 0,
+  "eben": false,
   "gut": false,
   "verschwiegen": false
  },
@@ -269,6 +289,7 @@
   "abweichung": 0.0553,
   "normale_grad": 56.1,
   "offene_kanten_mehr": 0,
+  "eben": false,
   "gut": false,
   "verschwiegen": false
  },
@@ -282,6 +303,7 @@
   "abweichung": 0.0099,
   "normale_grad": 15.7,
   "offene_kanten_mehr": 0,
+  "eben": false,
   "gut": true,
   "verschwiegen": false
  },
@@ -295,6 +317,7 @@
   "abweichung": 0.0211,
   "normale_grad": 15.4,
   "offene_kanten_mehr": 0,
+  "eben": false,
   "gut": false,
   "verschwiegen": false
  },
@@ -308,6 +331,7 @@
   "abweichung": 0.0302,
   "normale_grad": 17.0,
   "offene_kanten_mehr": 0,
+  "eben": false,
   "gut": false,
   "verschwiegen": false
  },
@@ -321,6 +345,7 @@
   "abweichung": 0.0052,
   "normale_grad": 7.9,
   "offene_kanten_mehr": 0,
+  "eben": false,
   "gut": true,
   "verschwiegen": false
  },
@@ -334,6 +359,7 @@
   "abweichung": 0.0228,
   "normale_grad": 18.0,
   "offene_kanten_mehr": 0,
+  "eben": false,
   "gut": false,
   "verschwiegen": false
  },
@@ -347,6 +373,7 @@
   "abweichung": 0.102,
   "normale_grad": 30.9,
   "offene_kanten_mehr": 0,
+  "eben": false,
   "gut": false,
   "verschwiegen": false
  },
@@ -360,6 +387,7 @@
   "abweichung": 0.0106,
   "normale_grad": 7.5,
   "offene_kanten_mehr": 0,
+  "eben": false,
   "gut": true,
   "verschwiegen": false
  },
@@ -373,6 +401,7 @@
   "abweichung": 0.0208,
   "normale_grad": 49.3,
   "offene_kanten_mehr": 0,
+  "eben": false,
   "gut": false,
   "verschwiegen": false
  },
@@ -386,6 +415,7 @@
   "abweichung": 0.0078,
   "normale_grad": 7.5,
   "offene_kanten_mehr": 0,
+  "eben": false,
   "gut": true,
   "verschwiegen": false
  },
@@ -399,6 +429,7 @@
   "abweichung": 0.0,
   "normale_grad": 0.0,
   "offene_kanten_mehr": 0,
+  "eben": true,
   "gut": true,
   "verschwiegen": false
  },
@@ -412,6 +443,7 @@
   "abweichung": 0.0,
   "normale_grad": 0.0,
   "offene_kanten_mehr": 0,
+  "eben": true,
   "gut": true,
   "verschwiegen": false
  },
@@ -425,6 +457,7 @@
   "abweichung": 0.0,
   "normale_grad": 0.0,
   "offene_kanten_mehr": 0,
+  "eben": true,
   "gut": true,
   "verschwiegen": false
  }

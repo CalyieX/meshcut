@@ -3,6 +3,7 @@
 ```
 Fremdmodelle: 33 Faelle (11 Modelle x 3 Fleckgroessen)
   'ok' gemeldet und wirklich gut: 10 von 33 = 30 % (95 %-Intervall 17-47 %), Ziel >= 85 %
+  nur auf GEKRUEMMTEN Flaechen (Fleck nicht eben): ok und gut 4 von 27 = 15 % (Intervall 6-32 %) - die ehrliche Hauptzahl
   davon 'ok' gemeldet insgesamt: 10; unsicher/nicht ok/abgelehnt: 23
   verschwiegene Fehler ('ok', aber nicht gut): 0
   bestanden (gut oder gemeldet): 33 von 33 = 100 % (Intervall 90-100 %)

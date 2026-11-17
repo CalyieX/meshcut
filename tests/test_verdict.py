@@ -434,3 +434,14 @@ def test_smoothing_is_kept_unless_triangles_flip_and_stays_on_the_sphere(tmp_pat
     monkeypatch.setattr(ed, "_flipped", lambda *a: True)                       # Umklappen erzwungen: es bleibt bei der ungeglaetteten Fuellung
     raw = _sphere_fill_radius(tmp_path, 1)
     assert raw.shape != smooth.shape or float(np.abs(raw - smooth).max()) > 1e-6
+
+
+@pytest.mark.parametrize("jump,level", [(24.9, "ok"), (25.1, "unsicher"), (59.9, "unsicher"), (60.1, "nicht ok")])
+def test_jump_thresholds_sit_exactly_at_25_and_60_degrees(jump, level):
+    r = dict(offene_kanten_vorher=0, offene_kanten_nachher=0, loecher_geschlossen=1, knick=(jump, jump, 4))
+    assert ed._verdict(ed.Scene(), r, "obj")[0] == level
+
+
+@pytest.mark.parametrize("vol,level", [(0.19, "ok"), (-0.19, "ok"), (0.21, "unsicher"), (-0.21, "unsicher")])
+def test_volume_threshold_sits_exactly_at_twenty_percent(vol, level):
+    assert ed._verdict(ed.Scene(), rep(volumen_aenderung=vol), "obj")[0] == level

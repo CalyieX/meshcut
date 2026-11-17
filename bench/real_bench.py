@@ -111,6 +111,11 @@ def run_case(name, src, frac, work, idx):
     patch = grow_patch(T0, pid0, n, 1000 + idx)
     if patch is None:
         return {"modell": name, "anteil": frac, "dreiecke": len(T0), "verdict": "kein Fleck", "grund": "kein Fleck ohne Beruehrung des offenen Rands", "gut": None, "verschwiegen": False}
+    pn = eb.tri_normals(sc0.V, T0[sorted(patch)])
+    pn = pn / np.maximum(np.linalg.norm(pn, axis=1, keepdims=True), 1e-12)
+    mean_n = pn.mean(axis=0)
+    mean_n = mean_n / max(float(np.linalg.norm(mean_n)), 1e-12)
+    planar = bool(np.degrees(np.arccos(np.clip(pn @ mean_n, -1, 1))).max() < 1.0)                 # Fleck exakt eben (Ebenenmodelle): trivialer Fall
     data, n_rest = punched_obj(sc0.V, T0, patch)
     p = work / ("%s_%g.obj" % (name, frac))
     p.write_bytes(data)
@@ -135,7 +140,7 @@ def run_case(name, src, frac, work, idx):
     open1 = ed._boundary_edges(sc1, ed.position_ids(sc1))
     good = dev <= TH_DEV and ang <= TH_NORMAL_DEG and open1 <= open0
     return {"modell": name, "anteil": frac, "dreiecke": len(T0), "gestanzt": n, "verdict": r["verdict"], "grund": r["reason"], "abweichung": round(dev, 4),
-            "normale_grad": round(ang, 1), "offene_kanten_mehr": open1 - open0, "gut": good, "verschwiegen": r["verdict"] == "ok" and not good}
+            "normale_grad": round(ang, 1), "offene_kanten_mehr": open1 - open0, "eben": planar, "gut": good, "verschwiegen": r["verdict"] == "ok" and not good}
 
 
 def main():
@@ -158,14 +163,18 @@ def main():
     ok_good = sum(1 for r in rows if r["verdict"] == "ok" and r["gut"])
     hidden = [r for r in rows if r["verschwiegen"]]
     passed = n - len(hidden)
+    curved = [r for r in rows if not r.get("eben")]
+    cg = sum(1 for r in curved if r["verdict"] == "ok" and r["gut"])
+    clo, chi = wilson(cg, len(curved))
     lo, hi = wilson(ok_good, n)
     plo, phi_ = wilson(passed, n)
     text = ("Fremdmodelle: %d Faelle (%d Modelle x %d Fleckgroessen)\n"
             "  'ok' gemeldet und wirklich gut: %d von %d = %.0f %% (95 %%-Intervall %.0f-%.0f %%), Ziel >= %.0f %%\n"
+            "  nur auf GEKRUEMMTEN Flaechen (Fleck nicht eben): ok und gut %d von %d = %.0f %% (Intervall %.0f-%.0f %%) - die ehrliche Hauptzahl\n"
             "  davon 'ok' gemeldet insgesamt: %d; unsicher/nicht ok/abgelehnt: %d\n"
             "  verschwiegene Fehler ('ok', aber nicht gut): %d\n"
             "  bestanden (gut oder gemeldet): %d von %d = %.0f %% (Intervall %.0f-%.0f %%)\n"
-            % (n, len(MODELS), len(FRACTIONS), ok_good, n, 100 * ok_good / n, 100 * lo, 100 * hi, 100 * TARGET_OK, ok, n - ok, len(hidden), passed, n, 100 * passed / n,
+            % (n, len(MODELS), len(FRACTIONS), ok_good, n, 100 * ok_good / n, 100 * lo, 100 * hi, 100 * TARGET_OK, cg, len(curved), 100 * cg / max(1, len(curved)), 100 * clo, 100 * chi, ok, n - ok, len(hidden), passed, n, 100 * passed / n,
                100 * plo, 100 * phi_))
     print("\n" + text)
     if a.write:

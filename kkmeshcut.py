@@ -42,7 +42,7 @@ from pathlib import Path
 
 import numpy as np
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 MAX_PARTS = 1024
 MAX_PLANES = 60
