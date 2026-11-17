@@ -43,6 +43,12 @@ CURVED_MIN = 0.01                                                # Loch folgt de
 CURVED_FIT = 0.02                                                # ... und der Paraboloid die Umgebung mit höchstens diesem Fehler (Anteil des Durchmessers) trifft
 UV_FIT = 0.1                                                     # UV der gewoelbten Fuellung aus der Lage, wenn der Randfit hoechstens diesen Anteil der UV-Spanne danebenliegt
 BAD_SHAPE = 0.15                                                 # swap auto: ab dieser Abweichung (Anteil der Diagonale) sagt meshcut, dass keine Form gut passt
+# --- Urteil (verdict). EINGEFROREN am 17.11.2026 VOR der ersten Messung; Aenderung nur mit Eintrag in bench/OK_SCHWELLEN.md ---
+JUMP_UNSURE = 25.0                                               # mittlerer Knickwinkel (Grad) zwischen Fuellung und angrenzender Flaeche: darueber "unsicher"
+JUMP_BAD = 60.0                                                  # ... darueber "nicht ok" (sichtbarer Knick am ganzen Fuellrand)
+VOLUME_BIG = 0.20                                                # Volumenaenderung eines Koerpers ueber diesem Anteil: "unsicher"
+BIG_HOLE = 0.30                                                  # entfernte Flaeche ueber diesem Anteil der Gesamtflaeche: Loch so gross, dass Inhalt erfunden werden muss
+MANY_HOLES = 2                                                   # ab so vielen getrennten Loechern: "unsicher" (zusammenhaengende Loecher)
 CURVED_RINGS = (2 / 3, 1 / 3)                                    # Zwischenringe der gewölbten Füllung (Anteil des Abstands zur Mitte)
 HOLE_PLANAR = 0.02                                               # Loch gilt als eben, wenn kein Randpunkt weiter als dieser Anteil des Durchmessers von der Ebene liegt
 
